@@ -17,9 +17,9 @@ struct WorkspaceView: View {
                 HStack(spacing: 9) {
                     Image(systemName: model.demoMode ? "cube.transparent" : "cable.connector")
                     VStack(alignment: .leading, spacing: 3) {
-                        Text(model.demoMode ? "Demo mode" : "No programmer connected")
+                        Text(model.demoMode ? "Demo mode" : "USB support not enabled")
                             .font(.caption.weight(.medium))
-                        Text(model.demoMode ? "Sample cartridge" : "FlashKit MD · USB")
+                        Text(model.demoMode ? "Sample cartridge" : "Unavailable in this build")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                     }

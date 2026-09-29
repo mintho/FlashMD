@@ -32,7 +32,7 @@ struct CartridgeWorkspaceView: View {
                         VStack(alignment: .leading, spacing: 8) {
                             Text("Your cartridge workspace")
                                 .font(.title2.weight(.semibold))
-                            Text("Device connection is not available in this build.")
+                            Text("This version does not detect USB programmers yet.")
                                 .foregroundStyle(.secondary)
                             Text("Explore the interface in demo mode, or select a local ROM file.")
                                 .font(.callout)
