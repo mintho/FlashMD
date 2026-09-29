@@ -1,0 +1,35 @@
+# Local notes and reference material
+*.md
+*.markdown
+docs/
+previews/
+.local/
+.instructions/
+
+# Xcode and Swift build output
+DerivedData/
+build/
+.build/
+.swiftpm/
+xcuserdata/
+*.xcuserstate
+*.xccheckout
+*.xcscmblueprint
+*.hmap
+*.ipa
+*.dSYM/
+*.dSYM.zip
+
+# Local machine configuration and credentials
+.DS_Store
+.env
+.env.*
+*.local.xcconfig
+
+# Cartridge images and save data
+*.bin
+*.rom
+*.srm
+*.sav
+*.smd
+*.gen
