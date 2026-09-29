@@ -57,7 +57,14 @@ public struct FlashGeometry: Codable, Sendable, Equatable {
 public enum CartridgeProfile: String, CaseIterable, Sendable, Codable, Identifiable {
     case automatic
     case krikzz4M
+    case linearROMOnly
     public var id: Self { self }
-    public var displayName: String { self == .automatic ? "Inspect only (unqualified mapper)" : "Krikzz FlashKit MD · 4 MiB ROM / 32 KiB SRAM" }
+    public var displayName: String {
+        switch self {
+        case .automatic: "Inspect only (unqualified mapper)"
+        case .krikzz4M: "Krikzz FlashKit MD · 4 MiB ROM / 32 KiB SRAM"
+        case .linearROMOnly: "Linear flash · 4 MiB ROM · no SRAM"
+        }
+    }
     public var saveLayout: SRAMLayout? { self == .krikzz4M ? try? SRAMLayout(start: 0x200001, end: 0x20FFFF, lane: 1) : nil }
 }

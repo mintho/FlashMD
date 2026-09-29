@@ -43,7 +43,7 @@ public struct CartridgeSnapshot: Sendable, Equatable {
     public let fingerprint: String
     public let warning: String?
     public let profile: CartridgeProfile
-    public var canWrite: Bool { !isDemo && geometry?.supported == true && profile == .krikzz4M }
+    public var canWrite: Bool { !isDemo && geometry?.supported == true && (profile == .krikzz4M || profile == .linearROMOnly) }
 
     public init(
         title: String,

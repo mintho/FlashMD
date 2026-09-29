@@ -27,7 +27,8 @@ struct CartridgeWorkspaceView: View {
                                 ProgressView(value:min(Double(rom.bytes),Double(capacity.bytes)),total:Double(capacity.bytes)).accessibilityLabel("Installed ROM compared to usable capacity")
                             }
                             LabeledContent("Current ROM",value:cartridge.romSize.map { formatBytes($0.bytes) + " · header" } ?? "Unknown")
-                            LabeledContent("Hardware save window",value:cartridge.saveLayout.map { "\(formatBytes($0.windowBytes)) raw / \(formatBytes($0.activeBytes)) active · profile" } ?? "Choose a confirmed cartridge profile")
+                            LabeledContent("Hardware save window",value:cartridge.saveLayout.map { "\(formatBytes($0.windowBytes)) raw / \(formatBytes($0.activeBytes)) active · profile" } ?? (cartridge.profile == .linearROMOnly ? "None for selected profile" : "Choose a confirmed cartridge profile"))
+                            if cartridge.profile == .linearROMOnly { Text("This profile supports ROM transfers. SRAM backup and restoration are unavailable.").font(.caption).foregroundStyle(.secondary) }
                             if let warning = cartridge.warning { Text(warning).font(.callout).foregroundStyle(.secondary) }
                         }.padding(8)
                     }
@@ -81,7 +82,7 @@ struct CartridgeWorkspaceView: View {
     private var backupPanel: some View {
         VStack(alignment:.leading,spacing:16) {
             Toggle("Game ROM",isOn:$model.backupROM).toggleStyle(.checkbox)
-            Toggle("Save data (SRAM)",isOn:$model.backupSRAM).toggleStyle(.checkbox)
+            Toggle("Save data (SRAM)",isOn:$model.backupSRAM).toggleStyle(.checkbox).disabled(model.profile == .linearROMOnly)
             if model.backupROM {
                 TextField("Exact ROM bytes (optional; required for invalid header)",text:$model.forcedROMSize)
                     .textFieldStyle(.roundedBorder).help("For example: 2097152 for 2 MiB. Limits are validated before reading.")
@@ -103,6 +104,9 @@ struct CartridgeWorkspaceView: View {
                 FileSelectionView(file:model.selectedROM,title:"Choose a game ROM",buttonTitle:"Choose ROM…") { model.isImportingROM = true }
                     .dropDestination(for:URL.self) { urls,_ in guard let url = urls.first else { return false }; model.selectFile(.success(url),forROM:true); return true }
                 if let image = model.selectedROM?.image {
+                    if image.metadata.saveLayout != nil, model.cartridge?.profile == .linearROMOnly {
+                        Label("This game declares save data, but the selected cartridge profile has no SRAM.",systemImage:"exclamationmark.triangle").font(.callout).foregroundStyle(.secondary)
+                    }
                     MetadataView(metadata:image.metadata,checksum:image.checksum)
                     ForEach(image.warnings,id:\.self) { Label($0,systemImage:"exclamationmark.triangle").font(.callout).foregroundStyle(.secondary) }
                     if let geometry = model.cartridge?.geometry, let size = try? geometry.programLength(image.data.count) {
@@ -113,7 +117,7 @@ struct CartridgeWorkspaceView: View {
                 }
             }
             Divider()
-            Toggle("Write save data (SRAM)",isOn:$model.writeSRAM).toggleStyle(.checkbox)
+            Toggle("Write save data (SRAM)",isOn:$model.writeSRAM).toggleStyle(.checkbox).disabled(model.profile == .linearROMOnly)
             if model.writeSRAM {
                 FileSelectionView(file:model.selectedSRAM,title:"Choose a compatible save",buttonTitle:"Choose SRAM…") { model.isImportingSRAM = true }
                     .dropDestination(for:URL.self) { urls,_ in guard let url = urls.first else { return false }; model.selectFile(.success(url),forROM:false); return true }

@@ -181,3 +181,10 @@ func phaseFailuresRetainAccurateResults(phase:String) throws {
         #expect(failure.result.manifest.artifacts.isEmpty)
     }
 }
+
+@Test func romOnlyProfileCannotRestoreSRAM() throws {
+    let device = MemoryDevice(), target = try device.inspect(profile:.linearROMOnly)
+    #expect(target.canWrite); #expect(target.saveLayout == nil)
+    _ = try WritePlan(target:target,image:ROMImage(data:fixtureROM()),romName:"test.bin",save:nil,saveName:nil,format:.raw,backupDestination:nil)
+    #expect(throws:(any Error).self) { try WritePlan(target:target,image:nil,romName:nil,save:Data(count:65536),saveName:"test.srm",format:.raw,backupDestination:nil) }
+}

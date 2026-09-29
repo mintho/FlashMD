@@ -31,7 +31,7 @@ struct SelectedFile: Sendable, Identifiable {
     var direction = TransferDirection.backup
     var demoMode = false { didSet { guard oldValue != demoMode else { return }; invalidateReview(); Task { await updateConnectionMode() } } }
     var profile: CartridgeProfile = .automatic {
-        didSet { UserDefaults.standard.set(profile.rawValue,forKey:"profile"); invalidateReview(); if connected { Task { await refresh() } } }
+        didSet { if profile == .linearROMOnly { backupSRAM = false; writeSRAM = false }; UserDefaults.standard.set(profile.rawValue,forKey:"profile"); invalidateReview(); if connected { Task { await refresh() } } }
     }
     var ports: [SerialPort] = []
     var selectedPort = "" {
@@ -80,6 +80,7 @@ struct SelectedFile: Sendable, Identifiable {
         if let raw = UserDefaults.standard.string(forKey:"profile"), let value = CartridgeProfile(rawValue:raw) { profile = value }
         backupBeforeWrite = UserDefaults.standard.object(forKey:"backupBeforeWrite") as? Bool ?? true
         verifyBackup = UserDefaults.standard.object(forKey:"verifyBackup") as? Bool ?? true
+        if profile == .linearROMOnly { backupSRAM = false; writeSRAM = false }
     }
     func initialize() async {
         guard !initialized else { return }; initialized = true
@@ -141,7 +142,7 @@ struct SelectedFile: Sendable, Identifiable {
             if backupROM, !override.isEmpty, Int(override) == nil { throw FlashMDError.invalid("Enter a whole ROM byte count.") }
             let count = backupROM ? (override.isEmpty ? cartridge.romSize?.bytes : Int(override)) : nil
             if backupROM, count == nil { throw FlashMDError.invalid("Set an exact ROM byte count for this invalid/blank header.") }
-            if backupSRAM, cartridge.saveLayout == nil { throw FlashMDError.invalid("Choose a confirmed cartridge profile before backing up SRAM.") }
+            if backupSRAM, cartridge.saveLayout == nil { throw FlashMDError.invalid("This profile has no supported SRAM window. Choose ROM only or a cartridge profile with SRAM.") }
             guard let destination = chooseDestination(prompt:"Choose backup destination") else { return }
             let request = try BackupRequest(cartridge:cartridge,romBytes:count,saveLayout:backupSRAM ? cartridge.saveLayout : nil,saveFormat:saveFormat,verify:verifyBackup,destination:destination)
             beginOperation(title:"Cartridge backup") { controller,progress in try await controller.backup(request,progress:progress) }
