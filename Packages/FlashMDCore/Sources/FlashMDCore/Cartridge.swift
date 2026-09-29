@@ -35,6 +35,15 @@ public struct CartridgeSnapshot: Sendable, Equatable {
     public let flashCapacity: MemoryMeasurement?
     public let rawSaveWindow: MemoryMeasurement?
     public let isDemo: Bool
+    public let metadata: ROMMetadata?
+    public let rawHeader: Data?
+    public let geometry: FlashGeometry?
+    public let saveLayout: SRAMLayout?
+    public let identity: String
+    public let fingerprint: String
+    public let warning: String?
+    public let profile: CartridgeProfile
+    public var canWrite: Bool { !isDemo && geometry?.supported == true && profile == .krikzz4M }
 
     public init(
         title: String,
@@ -42,7 +51,15 @@ public struct CartridgeSnapshot: Sendable, Equatable {
         romSize: MemoryMeasurement?,
         flashCapacity: MemoryMeasurement?,
         rawSaveWindow: MemoryMeasurement?,
-        isDemo: Bool = false
+        isDemo: Bool = false,
+        metadata: ROMMetadata? = nil,
+        geometry: FlashGeometry? = nil,
+        saveLayout: SRAMLayout? = nil,
+        identity: String = "",
+        fingerprint: String = "",
+        warning: String? = nil,
+        profile: CartridgeProfile = .automatic,
+        rawHeader: Data? = nil
     ) {
         self.title = title
         self.regions = regions
@@ -50,6 +67,9 @@ public struct CartridgeSnapshot: Sendable, Equatable {
         self.flashCapacity = flashCapacity
         self.rawSaveWindow = rawSaveWindow
         self.isDemo = isDemo
+        self.rawHeader = rawHeader ?? metadata?.rawHeader
+        self.metadata = metadata; self.geometry = geometry; self.saveLayout = saveLayout
+        self.identity = identity; self.fingerprint = fingerprint; self.warning = warning; self.profile = profile
     }
 }
 
