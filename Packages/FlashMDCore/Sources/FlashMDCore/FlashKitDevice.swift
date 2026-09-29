@@ -89,13 +89,18 @@ public final class FlashKitDevice: CartridgeDevice, @unchecked Sendable {
             warning = error.localizedDescription
         }
         let title = validHeader ? (metadata?.title ?? "Untitled cartridge") : (geometry != nil ? "Blank or invalid game header" : "Unreadable cartridge")
-        if let geometry, geometry.capacity > 0x400000 {
-            let limit = "This mapper profile supports the first 4 MiB of the physical flash chip. Bank switching is not supported."
-            warning = warning.map { $0 + " " + limit } ?? limit
+        if let geometry {
+            let limit: String?
+            if let usable = profile.romCapacityLimit, geometry.capacity > usable {
+                limit = profile == .krikzz4M
+                    ? "This SRAM cartridge profile exposes 2 MiB of ROM; the upper address range is reserved for SRAM. Bank switching is not supported."
+                    : "This ROM-only profile exposes the first 4 MiB of flash. Bank switching is not supported."
+            } else { limit = profile == .automatic ? "Choose a qualified cartridge profile to determine usable ROM capacity." : nil }
+            if let limit { warning = warning.map { $0 + " " + limit } ?? limit }
         }
         let layout = profile.saveLayout
         return CartridgeSnapshot(title: title, regions: validHeader ? metadata?.regions ?? [] : [], romSize: validHeader ? metadata?.declaredROMBytes.map { .init(bytes: $0, source: .header) } : nil,
-            flashCapacity: geometry.map { .init(bytes: min($0.capacity,0x400000), source: .hardware) }, rawSaveWindow: layout.map { .init(bytes: $0.windowBytes, source: .profile) },
+            flashCapacity: geometry.flatMap { profile.usableCapacity(for:$0) }, rawSaveWindow: layout.map { .init(bytes: $0.windowBytes, source: .profile) },
             metadata: validHeader ? metadata : nil, geometry: geometry, saveLayout: layout,
             identity: identity, fingerprint: hash(header), warning: warning, profile: profile, rawHeader:Data(header[0x100..<0x200]))
     }

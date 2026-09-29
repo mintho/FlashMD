@@ -56,15 +56,26 @@ public struct FlashGeometry: Codable, Sendable, Equatable {
 
 public enum CartridgeProfile: String, CaseIterable, Sendable, Codable, Identifiable {
     case automatic
+    // Keep the serialized key for existing settings and manifests; this SRAM mapper exposes 2 MiB ROM.
     case krikzz4M
     case linearROMOnly
     public var id: Self { self }
     public var displayName: String {
         switch self {
         case .automatic: "Inspect only (unqualified mapper)"
-        case .krikzz4M: "Krikzz FlashKit MD · 4 MiB ROM / 32 KiB SRAM"
+        case .krikzz4M: "Krikzz FlashKit MD · 2 MiB ROM / 32 KiB SRAM"
         case .linearROMOnly: "Linear flash · 4 MiB ROM · no SRAM"
         }
+    }
+    public var romCapacityLimit: Int? {
+        switch self {
+        case .automatic: nil
+        case .krikzz4M: 0x200000
+        case .linearROMOnly: 0x400000
+        }
+    }
+    public func usableCapacity(for geometry: FlashGeometry) -> MemoryMeasurement? {
+        romCapacityLimit.map { .init(bytes:min($0,geometry.capacity),source:$0 < geometry.capacity ? .profile : .hardware) }
     }
     public var saveLayout: SRAMLayout? { self == .krikzz4M ? try? SRAMLayout(start: 0x200001, end: 0x20FFFF, lane: 1) : nil }
 }

@@ -13,7 +13,7 @@ struct SettingsView: View {
             Section("Transfers") {
                 Toggle("Back up affected contents before writing",isOn:$model.backupBeforeWrite)
                 Toggle("Compare backups with a second read",isOn:$model.verifyBackup)
-                Text("Supported flash: ST M29W320ET/EB and AMD/Spansion S29GL064N boot-sector models. The initial mapper profile exposes up to 4 MiB.").font(.caption).foregroundStyle(.secondary)
+                Text("Supported flash: ST M29W320ET/EB and AMD/Spansion S29GL064N boot-sector models. ROM-only cartridges expose up to 4 MiB; the SRAM profile exposes up to 2 MiB ROM and 32 KiB active SRAM.").font(.caption).foregroundStyle(.secondary)
             }
             Section("Licensing") {
                 Text("FlashMD · GNU GPLv3").font(.callout)

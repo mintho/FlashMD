@@ -188,3 +188,17 @@ func phaseFailuresRetainAccurateResults(phase:String) throws {
     _ = try WritePlan(target:target,image:ROMImage(data:fixtureROM()),romName:"test.bin",save:nil,saveName:nil,format:.raw,backupDestination:nil)
     #expect(throws:(any Error).self) { try WritePlan(target:target,image:nil,romName:nil,save:Data(count:65536),saveName:"test.srm",format:.raw,backupDestination:nil) }
 }
+
+@Test func sramMapperCapsROMBeforeSaveAddresses() throws {
+    let device = MemoryDevice(), target = try device.inspect(profile:.krikzz4M)
+    #expect(target.flashCapacity?.bytes == 0x200000)
+    #expect(target.flashCapacity?.source == .profile)
+    #expect(throws:(any Error).self) { try BackupRequest(cartridge:target,romBytes:0x200001,saveLayout:nil,verify:false,destination:URL(fileURLWithPath:"/tmp")) }
+    let oversized = try ROMImage(data:fixtureROM(bytes:0x210000))
+    #expect(throws:(any Error).self) { try WritePlan(target:target,image:oversized,romName:"too-large.bin",save:nil,saveName:nil,format:.raw,backupDestination:nil) }
+    let romOnly = try device.inspect(profile:.linearROMOnly)
+    #expect(romOnly.flashCapacity?.bytes == 0x400000)
+    let unqualified = try device.inspect(profile:.automatic)
+    #expect(unqualified.flashCapacity == nil)
+    #expect(throws:(any Error).self) { try BackupRequest(cartridge:unqualified,romBytes:0x200001,saveLayout:nil,verify:false,destination:URL(fileURLWithPath:"/tmp")) }
+}

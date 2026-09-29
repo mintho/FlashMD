@@ -23,7 +23,7 @@ public struct BackupRequest: Sendable {
     public init(cartridge: CartridgeSnapshot, romBytes: Int?, saveLayout: SRAMLayout?, saveFormat: SaveFormat = .raw, verify: Bool, destination: URL) throws {
         guard romBytes != nil || saveLayout != nil else { throw FlashMDError.invalid("Choose ROM, SRAM, or both.") }
         if let count = romBytes {
-            guard count >= 512, count <= (cartridge.flashCapacity?.bytes ?? 0x400000) else { throw FlashMDError.invalid("ROM backup size exceeds the accessible cartridge range.") }
+            guard count >= 512, count <= (cartridge.flashCapacity?.bytes ?? 0x200000) else { throw FlashMDError.invalid("ROM backup size exceeds the supported cartridge range. Choose a qualified profile for sizes above 2 MiB.") }
         }
         self.cartridge = cartridge; self.romBytes = romBytes; self.saveLayout = saveLayout; self.saveFormat = saveFormat; self.verify = verify; self.destination = destination
     }
@@ -44,7 +44,7 @@ public struct WritePlan: Sendable {
     public init(target: CartridgeSnapshot, image: ROMImage?, romName: String?, save: Data?, saveName: String?, format: SaveFormat, backupDestination: URL?) throws {
         guard !target.isDemo else { throw FlashMDError.invalid("Demo cartridges cannot be written.") }
         guard image != nil || save != nil else { throw FlashMDError.invalid("Choose a ROM and/or save file to write.") }
-        guard target.canWrite, let geometry = target.geometry else { throw FlashMDError.invalid("Writing requires a recognized supported flash chip and the confirmed Krikzz cartridge profile.") }
+        guard target.canWrite, let geometry = target.geometry else { throw FlashMDError.invalid("Writing requires a recognized supported flash chip and a qualified cartridge profile with known ROM capacity.") }
         var representation: Data?
         if let image {
             guard image.data.count <= geometry.capacity, image.metadata.declaredROMBytes == image.data.count else { throw FlashMDError.invalid("The ROM file/header length is inconsistent or exceeds cartridge capacity.") }
