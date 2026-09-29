@@ -57,3 +57,29 @@ import Foundation
     #expect(throws:(any Error).self) { try FlashGeometry(cfi:data,manufacturer:1,deviceID:1) }
     #expect(!(try FlashGeometry(cfi:fixtureCFI(),manufacturer:0xC2,deviceID:0x2257)).supported)
 }
+
+@Test func geometryCapacityEdgesAndUnexpectedSectorLayout() throws {
+    let geometry = try fixtureGeometry(top:true)
+    #expect(try geometry.programLength(0x400000) == 0x400000)
+    #expect(throws:(any Error).self) { try geometry.programLength(0x400001) }
+    var uniform = fixtureCFI(); uniform[0x2C] = 1; uniform[0x2D] = 63; uniform[0x2F] = 0; uniform[0x30] = 1
+    let unqualified = try FlashGeometry(cfi:uniform,manufacturer:0x20,deviceID:0x2256)
+    #expect(!unqualified.supported)
+}
+@Test func boundedArbitraryHeadersAndSlicedData() throws {
+    for seed in 0..<128 {
+        let bytes = Data((0..<512).map { UInt8(truncatingIfNeeded:($0 * 73) ^ (seed * 31)) })
+        let metadata = try ROMMetadata.parse(bytes)
+        #expect(metadata.rawHeader.count == 256)
+        _ = try? ROMImage(data:bytes)
+    }
+    let original = fixtureROM(), prefixed = Data([0xFF]) + original
+    let image = try ROMImage(data:prefixed.dropFirst())
+    #expect(image.data == original)
+}
+@Test func evenAndWordSaveConversionRoundTrips() throws {
+    for layout in [try SRAMLayout(start:0x200000,end:0x20000E,lane:0),try SRAMLayout(start:0x200000,end:0x20000F,lane:nil)] {
+        let packed = Data((0..<layout.activeBytes).map { UInt8($0) })
+        #expect(try layout.pack(layout.rawRepresentation(packed,format:.packed)) == packed)
+    }
+}

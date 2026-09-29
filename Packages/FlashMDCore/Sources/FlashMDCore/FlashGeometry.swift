@@ -13,7 +13,12 @@ public struct FlashGeometry: Codable, Sendable, Equatable {
     public let bootID: UInt16
     public let sectors: [FlashSector]
     public var supported: Bool {
-        commandSet == 2 && ((manufacturer == 0x20 && [0x2256, 0x2257].contains(deviceID) && capacity == 0x400000) ||
+        let top = (manufacturer == 0x20 && deviceID == 0x2256) || (manufacturer == 0x01 && bootID == 0x2201)
+        let ordered = top ? Array(sectors.reversed()) : sectors
+        let geometryMatches = ordered.count == (capacity == 0x400000 ? 71 : 135)
+            && ordered.prefix(8).allSatisfy { $0.bytes == 8192 }
+            && ordered.dropFirst(8).allSatisfy { $0.bytes == 65536 }
+        return geometryMatches && commandSet == 2 && ((manufacturer == 0x20 && [0x2256, 0x2257].contains(deviceID) && capacity == 0x400000) ||
         (manufacturer == 0x01 && deviceID == 0x227E && extendedID == 0x2210 && [0x2200,0x2201].contains(bootID) && capacity == 0x800000))
     }
     public var name: String {
