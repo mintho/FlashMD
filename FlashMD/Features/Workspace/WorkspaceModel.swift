@@ -5,9 +5,9 @@ import AppKit
 import IOKit.pwr_mgt
 
 enum ROMBackupLength: String, CaseIterable, Identifiable {
-    case automatic, suggested, header, custom
+    case suggested, complete, header, custom
     var id: Self { self }
-    var title: String { switch self { case .automatic: "Complete ROM range (default)"; case .suggested: "Content analysis suggestion"; case .header: "Header size only"; case .custom: "Custom byte count" } }
+    var title: String { switch self { case .suggested: "Suggested size (default)"; case .complete: "Back Up Complete ROM"; case .header: "Header size only"; case .custom: "Custom byte count" } }
 }
 struct SelectedFile: Sendable, Identifiable {
     let id = UUID()
@@ -38,7 +38,7 @@ struct SelectedFile: Sendable, Identifiable {
     var portOverride = false
     var showHistory = false
     var scanStep = "Connecting to your programmer"
-    var backupLength = ROMBackupLength.automatic
+    var backupLength = ROMBackupLength.suggested
     var configurationPending = false
     var configurationOverride: CartridgeConfiguration? {
         get throws {
@@ -97,8 +97,10 @@ struct SelectedFile: Sendable, Identifiable {
     }
     var backupSizeDescription: String {
         switch backupLength {
-        case .automatic: return cartridge.map { formatBytes($0.romReadLimit) + " · complete ROM range" } ?? "Size not yet known"
-        case .suggested: return contentAnalysis?.suggestedBytes.map { formatBytes($0) + " · suggested export" } ?? "Scan to analyze contents"
+        case .complete: return cartridge.map { formatBytes($0.romReadLimit) + " · complete ROM range" } ?? "Size not yet known"
+        case .suggested:
+            if let bytes = contentAnalysis?.suggestedBytes { return formatBytes(bytes) + " · suggested export" }
+            return cartridge.map { formatBytes($0.romReadLimit) + " · complete ROM (no suggestion)" } ?? "Scan to analyze contents"
         case .header: return cartridge?.romSize.map { formatBytes($0.bytes) + " · header only" } ?? "No valid header size"
         case .custom: return Int(forcedROMSize).map { formatBytes($0) + " · custom" } ?? "Set size in Advanced Settings"
         }
@@ -217,8 +219,8 @@ struct SelectedFile: Sendable, Identifiable {
             if !backupROM { count = nil }
             else {
                 switch backupLength {
-                case .automatic: count = cartridge.romReadLimit
-                case .suggested: count = contentAnalysis?.suggestedBytes
+                case .complete: count = cartridge.romReadLimit
+                case .suggested: count = contentAnalysis?.suggestedBytes ?? cartridge.romReadLimit
                 case .header: count = cartridge.romSize?.bytes
                 case .custom: count = Int(override)
                 }
@@ -276,7 +278,7 @@ struct SelectedFile: Sendable, Identifiable {
                 if result.manifest.preservedSaveSHA256 != nil { completionMessage = "ROM write verified. Existing save data was preserved and checked." }
                 progress = .init(.completed,detail:completionMessage ?? "Completed")
                 cartridge = try? await controller.inspect(profile:profile,override:configurationOverride)
-                if title == "Cartridge write" { contentAnalysis = nil; if backupLength == .suggested { backupLength = .automatic } }
+                if title == "Cartridge write" { contentAnalysis = nil }
             } catch {
                 let failure = error as? OperationFailure
                 record(.init(title:title,detail:error.localizedDescription,outcome:failure?.result.manifest.outcome ?? "failed",result:failure?.result,id:eventID,date:eventDate))

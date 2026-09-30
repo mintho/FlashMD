@@ -60,7 +60,11 @@ struct CartridgeWorkspaceView: View {
                                 .transition(.opacity)
                         }
                     }.overlay(alignment:.top) { Color.clear.frame(height:1).id("workspaceTop") }.padding(.horizontal,36).padding(.top,12).padding(.bottom,24)
+                        .frame(minHeight:viewport.size.height,alignment:advanced ? .top : .center)
                         .frame(maxWidth:880).frame(maxWidth:.infinity)
+                }
+                .onChange(of:advanced) { _,expanded in
+                    if !expanded { pendingAdvancedScroll = false; scroll.scrollTo("workspaceTop",anchor:.top) }
                 }
                 .onChange(of:model.operationRunning) { _,running in
                     if running {
@@ -153,7 +157,7 @@ struct CartridgeWorkspaceView: View {
                 metric("ROM CAPACITY",cartridge.flashCapacity.map { formatBytes($0.bytes) } ?? "Unknown",note:cartridge.isDemo ? "Sample data" : (cartridge.configurationOverride != nil || cartridge.profile != .automatic ? "Manual configuration" : "Automatically configured"))
                 Rectangle().fill(Color.primary.opacity(0.1)).frame(width:1,height:42)
                 metric("HEADER ROM SIZE",cartridge.romSize.map { formatBytes($0.bytes) } ?? "No valid header",note:"Declared by the game; may be incomplete")
-                    .help("The game header declares this size; it is not a measurement of all ROM contents. Automatic backup reads the complete accessible ROM range.")
+                    .help("The game header declares this size; it is not a measurement of all ROM contents. The default export size comes from content analysis. Choose Back Up Complete ROM to include every accessible ROM byte.")
                 Rectangle().fill(Color.primary.opacity(0.1)).frame(width:1,height:42)
                 metric("SAVE MEMORY",cartridge.saveLayout.map { formatBytes($0.activeBytes) + " SRAM" } ?? "None declared",note:cartridge.saveLayout == nil ? "Override in Advanced Settings" : (cartridge.configurationOverride == nil && cartridge.profile == .automatic ? "From the game header" : "Manual configuration"))
             }.padding(.vertical,compact ? 12 : 18).background(Color.primary.opacity(scheme == .dark ? 0.035 : 0.025),in:RoundedRectangle(cornerRadius:18))
@@ -208,16 +212,13 @@ struct CartridgeWorkspaceView: View {
                 HStack(spacing:12) {
                     VStack(alignment:.leading,spacing:3) {
                         Text("Suggested export · \(formatBytes(suggested))").font(.caption.weight(.semibold))
-                        Text("Estimate from ROM contents. Complete backup remains the default.").font(.caption2).foregroundStyle(.secondary)
+                        Text("Estimate from ROM contents. Include unused space with a complete backup.").font(.caption2).foregroundStyle(.secondary)
                     }
                     Spacer(minLength:0)
                     Button("Details") { analysisDetails = true }.buttonStyle(.plain).foregroundStyle(flashViolet)
                         .popover(isPresented:$analysisDetails) { analysisSummary(analysis).padding(24).frame(width:420) }
-                    if suggested < analysis.scannedBytes, model.backupLength != .suggested {
-                        Button("Use Suggestion") { model.backupLength = .suggested }.controlSize(.small)
-                    } else if model.backupLength == .suggested {
-                        Button("Use Complete ROM") { model.backupLength = .automatic }.controlSize(.small)
-                    }
+                    Toggle("Back Up Complete ROM",isOn:Binding(get:{model.backupLength == .complete},set:{model.backupLength = $0 ? .complete : .suggested}))
+                        .toggleStyle(.switch).controlSize(.mini).fixedSize()
                 }.font(.caption)
             }
             HStack(alignment:.center) {
@@ -357,7 +358,7 @@ struct CartridgeWorkspaceView: View {
             VStack(alignment:.leading,spacing:10) {
                 Text("Backup and verification").font(.headline)
                 Picker("ROM backup length",selection:$model.backupLength) { ForEach(ROMBackupLength.allCases) { Text($0.title).tag($0) } }
-                Text("Complete ROM range is the default and includes unused space. Content analysis suggests a smaller export when the end is erased; it cannot prove which bytes the game needs. Header size only can omit data. Use a custom byte count for a known size.").font(.caption).foregroundStyle(.secondary)
+                Text("Suggested size is the default. Content analysis suggests a smaller export when the end is erased; it cannot prove which bytes the game needs. Back Up Complete ROM includes all accessible ROM bytes and unused space. Header size only can omit data. Use a custom byte count for a known size.").font(.caption).foregroundStyle(.secondary)
                 if model.backupLength == .custom {
                     LabeledContent("ROM bytes to read") { TextField("2097152",text:$model.forcedROMSize).textFieldStyle(.roundedBorder).accessibilityLabel("ROM bytes to read") }
                     HStack {
