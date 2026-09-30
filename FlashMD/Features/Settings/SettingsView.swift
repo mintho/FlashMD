@@ -8,12 +8,12 @@ struct SettingsView: View {
             Section("Workspace") {
                 Toggle("Demo mode",isOn:$model.demoMode)
                 Text("Demo mode uses sample information and cannot write to hardware.").font(.caption).foregroundStyle(.secondary)
-                Picker("Cartridge profile",selection:$model.profile) { ForEach(CartridgeProfile.allCases) { Text($0.displayName).tag($0) } }
+                Text("Cartridges are configured automatically when you scan. Manual memory settings are available in Advanced Options.").font(.caption).foregroundStyle(.secondary)
             }
             Section("Transfers") {
                 Toggle("Back up affected contents before writing",isOn:$model.backupBeforeWrite)
                 Toggle("Compare backups with a second read",isOn:$model.verifyBackup)
-                Text("Supported flash: ST M29W320ET/EB and AMD/Spansion S29GL064N boot-sector models. ROM-only cartridges expose up to 4 MiB; the SRAM profile exposes up to 2 MiB ROM and 32 KiB active SRAM.").font(.caption).foregroundStyle(.secondary)
+                Text("Supported flash: ST M29W320ET/EB and AMD/Spansion S29GL064N boot-sector models. Automatic ROM access is limited to 4 MiB, or to the start of header-declared SRAM. Additional mappings can be configured manually within that range.").font(.caption).foregroundStyle(.secondary)
             }
             Section("Licensing") {
                 Text("FlashMD · GNU GPLv3").font(.callout)

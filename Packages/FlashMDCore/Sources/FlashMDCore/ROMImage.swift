@@ -12,7 +12,7 @@ public enum FlashMDError: LocalizedError, Sendable, Equatable {
         switch self {
         case .invalid(let text): text
         case .disconnected: "The programmer was disconnected. Reconnect it and refresh before trying again."
-        case .busy: "The programmer is busy or another operation is running."
+        case .busy: "The programmer is busy. Close other FlashMD or flashkit sessions using this USB device, then scan again."
         case .timeout: "The programmer did not respond before the timeout. Check the USB connection and refresh."
         case .cancelled: "The operation was cancelled."
         case .mismatch(let offset): "Readback differs at byte 0x\(String(offset, radix: 16).uppercased()). Verification failed."
@@ -37,6 +37,11 @@ public struct SRAMLayout: Codable, Sendable, Equatable {
         guard start >= 0x200000, end >= start, end < 0x300000, end - start < 0x10000,
               lane == nil || lane == 0 || lane == 1 else {
             throw FlashMDError.invalid("Unsupported SRAM range or layout. Select a supported cartridge profile.")
+        }
+        if let lane {
+            guard start & 1 == lane, end & 1 == lane else { throw FlashMDError.invalid("For 8-bit SRAM, start and end addresses must both match the selected odd or even byte lane.") }
+        } else {
+            guard start & 1 == 0, end & 1 == 1 else { throw FlashMDError.invalid("For 16-bit SRAM, use an even start address and an odd inclusive end address.") }
         }
         self.start = start; self.end = end; self.lane = lane
     }

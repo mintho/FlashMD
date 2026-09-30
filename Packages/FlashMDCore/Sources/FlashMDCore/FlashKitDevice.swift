@@ -89,18 +89,21 @@ public final class FlashKitDevice: CartridgeDevice, @unchecked Sendable {
             warning = error.localizedDescription
         }
         let title = validHeader ? (metadata?.title ?? "Untitled cartridge") : (geometry != nil ? "Blank or invalid game header" : "Unreadable cartridge")
-        if let geometry {
-            let limit: String?
-            if let usable = profile.romCapacityLimit, geometry.capacity > usable {
-                limit = profile == .krikzz4M
-                    ? "This SRAM cartridge profile exposes 2 MiB of ROM; the upper address range is reserved for SRAM. Bank switching is not supported."
-                    : "This ROM-only profile exposes the first 4 MiB of flash. Bank switching is not supported."
-            } else { limit = profile == .automatic ? "Choose a qualified cartridge profile to determine usable ROM capacity." : nil }
-            if let limit { warning = warning.map { $0 + " " + limit } ?? limit }
+        let layout = profile == .automatic ? (validHeader ? metadata?.saveLayout : nil) : profile.saveLayout
+        let capacity: MemoryMeasurement?
+        if profile == .automatic {
+            // A header describes a game's requirements, not the board. Use it as an explicit
+            // assumption; never mistake the physical chip's size for accessible ROM space.
+            capacity = geometry.map { CartridgeConfiguration.inferredCapacity(geometry:$0,saveLayout:layout) }
+            let assumption = layout != nil
+                ? "Automatic configuration uses the header's SRAM range and keeps ROM below it. Adjust Advanced Options for a switchable mapper or a different physical save size."
+                : "Automatic configuration assumes linear ROM access up to 4 MiB. A missing save declaration does not prove that the board has no SRAM. Adjust Advanced Options if needed."
+            warning = [warning, metadata?.saveWarning, assumption].compactMap { $0 }.joined(separator:" ")
+        } else {
+            capacity = geometry.flatMap { profile.usableCapacity(for:$0) } ?? profile.romCapacityLimit.map { .init(bytes:$0,source:.profile) }
         }
-        let layout = profile.saveLayout
         return CartridgeSnapshot(title: title, regions: validHeader ? metadata?.regions ?? [] : [], romSize: validHeader ? metadata?.declaredROMBytes.map { .init(bytes: $0, source: .header) } : nil,
-            flashCapacity: geometry.flatMap { profile.usableCapacity(for:$0) }, rawSaveWindow: layout.map { .init(bytes: $0.windowBytes, source: .profile) },
+            flashCapacity: capacity, rawSaveWindow: layout.map { .init(bytes: $0.windowBytes, source: profile == .automatic ? .header : .profile) },
             metadata: validHeader ? metadata : nil, geometry: geometry, saveLayout: layout,
             identity: identity, fingerprint: hash(header), warning: warning, profile: profile, rawHeader:Data(header[0x100..<0x200]))
     }

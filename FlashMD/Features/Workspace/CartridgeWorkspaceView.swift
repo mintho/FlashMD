@@ -2,188 +2,447 @@ import FlashMDCore
 import SwiftUI
 import UniformTypeIdentifiers
 
+private let flashViolet = Color(red:0.57,green:0.35,blue:1)
+private let flashMint = Color(red:0.41,green:0.92,blue:0.84)
+
 struct CartridgeWorkspaceView: View {
     @Bindable var model: WorkspaceModel
-    var body: some View {
-        ScrollView {
-            VStack(alignment:.leading,spacing:22) {
-                connectionPanel
-                if let cartridge = model.cartridge {
-                    HStack(spacing:24) {
-                        CartridgeIllustration()
-                        VStack(alignment:.leading,spacing:7) {
-                            Text("MEGA DRIVE / GENESIS").font(.caption.weight(.semibold)).tracking(1.3).foregroundStyle(.tint)
-                            Text(cartridge.title).font(.system(size:30,weight:.semibold,design:.rounded))
-                            Text(cartridge.regions.joined(separator:" · ")).foregroundStyle(.secondary)
-                            Text(cartridge.isDemo ? "Demo cartridge · sample data" : (cartridge.geometry?.name ?? "ROM cartridge · flash unidentified")).font(.caption).foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                    }
-                    GroupBox {
-                        VStack(alignment:.leading,spacing:12) {
-                            LabeledContent("Usable ROM capacity",value:cartridge.flashCapacity.map { formatBytes($0.bytes) + " · " + $0.source.displayName } ?? "Unknown")
-                            if let geometry = cartridge.geometry { LabeledContent("Physical flash chip",value:formatBytes(geometry.capacity)) }
-                            if let capacity = cartridge.flashCapacity, let rom = cartridge.romSize, capacity.bytes > 0 {
-                                ProgressView(value:min(Double(rom.bytes),Double(capacity.bytes)),total:Double(capacity.bytes)).accessibilityLabel("Installed ROM compared to usable capacity")
-                            }
-                            LabeledContent("Current ROM",value:cartridge.romSize.map { formatBytes($0.bytes) + " · header" } ?? "Unknown")
-                            LabeledContent("Hardware save window",value:cartridge.saveLayout.map { "\(formatBytes($0.windowBytes)) raw / \(formatBytes($0.activeBytes)) active · profile" } ?? (cartridge.profile == .linearROMOnly ? "None for selected profile" : "Choose a confirmed cartridge profile"))
-                            if cartridge.profile == .linearROMOnly { Text("This profile supports ROM transfers. SRAM backup and restoration are unavailable.").font(.caption).foregroundStyle(.secondary) }
-                            if let warning = cartridge.warning { Text(warning).font(.callout).foregroundStyle(.secondary) }
-                        }.padding(8)
-                    }
-                    if let metadata = cartridge.metadata { MetadataView(metadata:metadata,checksum:nil) }
-                } else {
-                    ContentUnavailableView(model.connected ? "Cartridge information unavailable" : "Connect your programmer",systemImage:"cable.connector",description:Text("Connect FlashKit MD via USB, choose its serial port, and click Connect. You can inspect local ROM files without a programmer."))
-                        .frame(minHeight:130)
-                }
-                Picker("Transfer direction",selection:$model.direction) { ForEach(TransferDirection.allCases) { Text($0.displayName).tag($0) } }
-                    .pickerStyle(.segmented).labelsHidden().accessibilityLabel("Transfer direction").frame(width:240).disabled(model.isBusy)
-                Group { if model.direction == .backup { backupPanel } else { writePanel } }.disabled(model.isBusy)
-                if let progress = model.progress {
-                    GroupBox {
-                        VStack(alignment:.leading,spacing:10) {
-                            HStack {
-                                if progress.phase == .completed {
-                                    Label(progress.detail,systemImage:"checkmark.circle.fill").foregroundStyle(.green)
-                                } else { Text(progress.detail.isEmpty ? progress.phase.rawValue : progress.detail).fontWeight(.medium) }
-                                Spacer()
-                                if model.operationRunning {
-                                    Button(progress.cancellable ? "Cancel" : "Stop after safe boundary") { model.cancel() }
-                                }
-                            }
-                            if progress.total > 0 { ProgressView(value:Double(progress.completed),total:Double(progress.total)); Text("\(progress.completed.formatted()) / \(progress.total.formatted())").font(.caption).monospacedDigit() }
-                            if let start = model.operationStart, model.operationRunning {
-                                TimelineView(.periodic(from:start,by:1)) { context in Text("Elapsed \(Int(context.date.timeIntervalSince(start))) seconds").font(.caption).foregroundStyle(.secondary).monospacedDigit() }
-                            }
-                        }.padding(8)
-                    }.accessibilityElement(children:.contain)
-                }
+    @Environment(\.colorScheme) private var scheme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.colorSchemeContrast) private var contrast
+    @State private var advanced = false
+    @State private var details = false
+    @State private var fileDetails = false
 
-            }.padding(28).frame(maxWidth:900,alignment:.leading).frame(maxWidth:.infinity)
-        }
-    }
-    private var connectionPanel: some View {
-        GroupBox {
-            VStack(alignment:.leading,spacing:12) {
+    var body: some View {
+        ZStack {
+            backdrop
+            VStack(spacing:0) {
                 HStack {
-                    Picker("USB port",selection:$model.selectedPort) {
-                        if model.ports.isEmpty { Text("No USB serial ports found").tag("") }
-                        ForEach(model.ports) { Text($0.name).tag($0.path) }
-                    }
-                    Button("Scan") { Task { await model.scanPorts() } }
-                    Button(model.connected ? "Reconnect" : "Connect") { Task { await model.connect() } }.disabled(model.selectedPort.isEmpty || model.demoMode)
+                    Text("FlashMD").font(.system(size:16,weight:.semibold,design:.rounded)).tracking(0.3)
+                    Spacer()
+                    if model.demoMode { Text("DEMO · SAMPLE DATA").font(.caption.weight(.semibold)).tracking(1).foregroundStyle(.secondary) }
+                }.padding(.horizontal,32).padding(.top,24).padding(.bottom,8)
+                ScrollViewReader { scroll in
+                ScrollView {
+                    VStack(spacing:26) {
+                        if let cartridge = model.cartridge, !model.isInspecting {
+                            cartridgeSummary(cartridge)
+                            transferPanel
+                            if model.progress != nil { progressPanel.id("transferProgress") }
+                        } else { scanWelcome }
+                        if advanced { advancedPanel.id("advanced").transition(.opacity) }
+                    }.id("workspaceTop").padding(.horizontal,36).padding(.top,16).padding(.bottom,24)
+                        .frame(maxWidth:880).frame(maxWidth:.infinity)
                 }
-                Picker("Cartridge profile",selection:$model.profile) { ForEach(CartridgeProfile.allCases) { Text($0.displayName).tag($0) } }
-                Text("Select the FlashKit profile only for a compatible linear flash cartridge. Other mappers remain inspect-only. Refresh after swapping cartridges.").font(.caption).foregroundStyle(.secondary)
-            }.padding(8)
-        }.disabled(model.isBusy || model.demoMode)
-    }
-    private var backupPanel: some View {
-        VStack(alignment:.leading,spacing:16) {
-            Toggle("Game ROM",isOn:$model.backupROM).toggleStyle(.checkbox)
-            Toggle("Save data (SRAM)",isOn:$model.backupSRAM).toggleStyle(.checkbox).disabled(model.profile == .linearROMOnly)
-            if model.backupROM {
-                TextField("Exact ROM bytes (optional; required for invalid header)",text:$model.forcedROMSize)
-                    .textFieldStyle(.roundedBorder).help("For example: 2097152 for 2 MiB. Limits are validated before reading.")
-            }
-            if model.backupSRAM { Picker("Save output format",selection:$model.saveFormat) { ForEach(SaveFormat.allCases) { Text($0.displayName).tag($0) } } }
-            Toggle("Verify backup with a second read",isOn:$model.verifyBackup)
-            HStack {
-                Text("A new folder contains the selected files and a SHA-256 manifest.").font(.caption).foregroundStyle(.secondary)
-                Spacer()
-                Button("Choose destination…") { model.startBackup() }.buttonStyle(.borderedProminent)
-                    .disabled(model.demoMode || !model.connected || model.cartridge == nil || (!model.backupROM && !model.backupSRAM))
+                .onChange(of:advanced) { _,expanded in
+                    if expanded { withAnimation(reduceMotion ? nil : .easeInOut(duration:0.25)) { scroll.scrollTo("advanced",anchor:.top) } }
+                }
+                .onChange(of:model.operationRunning) { _,running in
+                    if running { withAnimation(reduceMotion ? nil : .easeInOut(duration:0.25)) { scroll.scrollTo("transferProgress",anchor:.bottom) } }
+                }
+                .onChange(of:model.isInspecting) { _,scanning in
+                    if scanning { scroll.scrollTo("workspaceTop",anchor:.top) }
+                }
+                }
+                footer
             }
         }
+        .tint(flashViolet)
+        .animation(reduceMotion ? nil : .easeInOut(duration:0.25),value:model.isInspecting)
+        .animation(reduceMotion ? nil : .easeInOut(duration:0.25),value:advanced)
     }
+
+    private var backdrop: some View {
+        GeometryReader { proxy in
+            ZStack {
+                (scheme == .dark ? Color(red:0.055,green:0.045,blue:0.12) : Color(red:0.96,green:0.95,blue:0.99))
+                RadialGradient(colors:[flashViolet.opacity(scheme == .dark ? 0.32 : 0.16),.clear],center:.init(x:0.35,y:0.18),startRadius:10,endRadius:proxy.size.width * 0.7)
+                RadialGradient(colors:[Color.blue.opacity(scheme == .dark ? 0.14 : 0.06),.clear],center:.bottomTrailing,startRadius:0,endRadius:proxy.size.width * 0.7)
+            }.ignoresSafeArea()
+        }.allowsHitTesting(false).accessibilityHidden(true)
+    }
+
+    private var scanWelcome: some View {
+        VStack(spacing:22) {
+            Spacer(minLength:22)
+            ZStack {
+                Ellipse().fill(flashViolet.opacity(0.25)).frame(width:290,height:40).blur(radius:30).offset(y:120)
+                CartridgeArtwork(scanning:model.isInspecting).frame(width:240,height:230)
+            }.padding(.bottom,6)
+            VStack(spacing:12) {
+                Text(model.isInspecting ? "Getting to know your cartridge" : "Meet your cartridge.")
+                    .font(.system(size:36,weight:.medium,design:.rounded)).multilineTextAlignment(.center)
+                Text(model.isInspecting ? model.scanStep : "Connect FlashKit via USB, insert a cartridge,\nand scan to get started.")
+                    .font(.system(size:15)).foregroundStyle(.secondary).multilineTextAlignment(.center).frame(minHeight:42)
+            }
+            scanButton(large:true).padding(.top,10)
+            Text(model.isInspecting ? "Cartridge contents are kept intact." : "Read games. Preserve saves. Write something new.")
+                .font(.caption).foregroundStyle(.secondary).padding(.top,4)
+            if model.selectedROM != nil {
+                Text("Your imported ROM is ready. Scan a cartridge to continue.").font(.callout).foregroundStyle(.secondary)
+            }
+            Spacer(minLength:22)
+        }.frame(maxWidth:.infinity).frame(minHeight:570)
+    }
+
+    private func scanButton(large:Bool) -> some View {
+        Button { Task { await model.refresh() } } label: {
+            HStack(spacing:10) {
+                if model.isInspecting { ProgressView().controlSize(.small).tint(.white) }
+                Text(model.isInspecting ? "Scanning…" : "Scan Cartridge").font(.system(size:large ? 17 : 13,weight:.semibold))
+            }
+            .foregroundStyle(.white).padding(.horizontal,large ? 34 : 20).padding(.vertical,large ? 19 : 12)
+            .background(LinearGradient(colors:[flashViolet,Color(red:0.36,green:0.22,blue:0.82)],startPoint:.topLeading,endPoint:.bottomTrailing),in:Capsule())
+            .overlay(Capsule().strokeBorder(.white.opacity(0.25),lineWidth:1))
+            .shadow(color:flashViolet.opacity(large ? 0.4 : 0.15),radius:large ? 25 : 12,y:8)
+            .contentShape(Capsule())
+        }.buttonStyle(.plain).disabled(model.isBusy).opacity(model.isBusy && !model.isInspecting ? 0.45 : 1).help("Find the programmer, reconnect, and inspect the inserted cartridge")
+            .accessibilityIdentifier("scanCartridge")
+    }
+
+    private func cartridgeSummary(_ cartridge:CartridgeSnapshot) -> some View {
+        VStack(spacing:22) {
+            HStack(spacing:24) {
+                CartridgeArtwork(scanning:false).frame(width:125,height:135)
+                VStack(alignment:.leading,spacing:8) {
+                    Text("MEGA DRIVE / GENESIS").font(.system(size:10,weight:.bold)).tracking(2).foregroundStyle(flashViolet)
+                    Text(cartridge.title).font(.system(size:28,weight:.semibold,design:.rounded)).fixedSize(horizontal:false,vertical:true)
+                    HStack(spacing:8) {
+                        Text(cartridge.regions.isEmpty ? "No game region detected" : cartridge.regions.joined(separator:" · ")).foregroundStyle(.secondary)
+                        if cartridge.metadata != nil {
+                            Button("Game Details") { details = true }.buttonStyle(.plain).foregroundStyle(flashViolet)
+                                .popover(isPresented:$details) {
+                                    MetadataView(metadata:cartridge.metadata!,checksum:nil).padding(24).frame(width:480)
+                                }
+                        }
+                    }.font(.caption)
+                }
+                Spacer(minLength:0)
+                scanButton(large:false)
+            }
+            HStack(spacing:0) {
+                metric("ROM CAPACITY",cartridge.flashCapacity.map { formatBytes($0.bytes) } ?? "Unknown",note:cartridge.isDemo ? "Sample data" : (cartridge.configurationOverride != nil || cartridge.profile != .automatic ? "Manual configuration" : "Automatically configured"))
+                Rectangle().fill(Color.primary.opacity(0.1)).frame(width:1,height:42)
+                metric("INSTALLED GAME",cartridge.romSize.map { formatBytes($0.bytes) } ?? "No valid header",note:"From the game header")
+                Rectangle().fill(Color.primary.opacity(0.1)).frame(width:1,height:42)
+                metric("SAVE MEMORY",cartridge.saveLayout.map { formatBytes($0.activeBytes) + " SRAM" } ?? "None declared",note:cartridge.saveLayout == nil ? "Override in Advanced Options" : (cartridge.configurationOverride == nil && cartridge.profile == .automatic ? "From the game header" : "Manual configuration"))
+            }.padding(.vertical,18).background(Color.primary.opacity(scheme == .dark ? 0.035 : 0.025),in:RoundedRectangle(cornerRadius:18))
+        }.padding(.top,4)
+    }
+    private func metric(_ label:String,_ value:String,note:String) -> some View {
+        VStack(alignment:.leading,spacing:6) {
+            Text(label).font(.system(size:9,weight:.semibold)).tracking(1.5).foregroundStyle(.secondary)
+            Text(value).font(.system(size:20,weight:.medium,design:.rounded))
+            Text(note).font(.system(size:10)).foregroundStyle(.secondary)
+        }.frame(maxWidth:.infinity,alignment:.leading).padding(.horizontal,20)
+    }
+
+    private var transferPanel: some View {
+        VStack(alignment:.leading,spacing:22) {
+            HStack {
+                HStack(spacing:4) {
+                    directionButton(.backup)
+                    directionButton(.write)
+                }.padding(4).background(Color.primary.opacity(0.055),in:Capsule())
+                Spacer()
+                Text(model.direction == .backup ? "CARTRIDGE → MAC" : "MAC → CARTRIDGE")
+                    .font(.system(size:9,weight:.semibold)).tracking(1.5).foregroundStyle(.secondary)
+            }
+            if model.direction == .backup { backupPanel } else { writePanel }
+            if model.configurationPending {
+                Text("Configuration changed. Apply it in Advanced Options before transferring.").font(.callout).foregroundStyle(.orange)
+            }
+        }.padding(26).background(panelBackground)
+    }
+    private func directionButton(_ direction:TransferDirection) -> some View {
+        Button { model.direction = direction } label: {
+            Text(direction == .backup ? "Backup" : "Write").font(.system(size:14,weight:.semibold))
+                .frame(width:96,height:34)
+                .background(model.direction == direction ? flashViolet.opacity(scheme == .dark ? 0.4 : 0.13) : .clear,in:Capsule())
+                .foregroundStyle(model.direction == direction ? Color.primary : Color.secondary)
+        }.buttonStyle(.plain).disabled(model.isBusy)
+            .accessibilityAddTraits(model.direction == direction ? .isSelected : [])
+    }
+
+    private var backupPanel: some View {
+        VStack(alignment:.leading,spacing:20) {
+            VStack(alignment:.leading,spacing:5) {
+                Text("Keep a copy of your cartridge.").font(.system(size:19,weight:.medium,design:.rounded))
+                Text(model.verifyBackup ? "Choose what to save. FlashMD checks the backup with a second read." : "Choose what to save to your Mac.").font(.callout).foregroundStyle(.secondary)
+            }
+            HStack(spacing:12) {
+                selectionCard("Game ROM",subtitle:model.backupSizeDescription,symbol:"gamecontroller",selected:$model.backupROM,enabled:true)
+                selectionCard("Save data",subtitle:model.cartridge?.saveLayout.map { formatBytes($0.activeBytes) + " of SRAM" } ?? "No SRAM configured",symbol:"externaldrive",selected:$model.backupSRAM,enabled:model.cartridge?.saveLayout != nil)
+            }
+            HStack(alignment:.center) {
+                Text(model.verifyBackup ? "Verified files in a new backup folder." : "Second-read verification is off.").font(.caption).foregroundStyle(.secondary)
+                Spacer()
+                Button("Back Up…") { model.startBackup() }.buttonStyle(FlashActionStyle()).disabled(!model.canBackup)
+            }
+        }.disabled(model.isBusy)
+    }
+
     private var writePanel: some View {
-        VStack(alignment:.leading,spacing:16) {
-            Toggle("Write game ROM",isOn:$model.writeROM).toggleStyle(.checkbox)
+        VStack(alignment:.leading,spacing:18) {
+            VStack(alignment:.leading,spacing:5) {
+                Text("A new game. Or a familiar save.").font(.system(size:19,weight:.medium,design:.rounded))
+                Text("Choose your files, then review exactly what will change.").font(.callout).foregroundStyle(.secondary)
+            }
+            HStack(spacing:12) {
+                selectionCard("Game ROM",subtitle:"Replace the installed game",symbol:"gamecontroller",selected:$model.writeROM,enabled:model.cartridge?.canWrite == true)
+                selectionCard("Save data",subtitle:"Restore a saved game",symbol:"externaldrive",selected:$model.writeSRAM,enabled:model.cartridge?.canRestoreSave == true)
+            }
             if model.writeROM {
                 FileSelectionView(file:model.selectedROM,title:"Choose a game ROM",buttonTitle:"Choose ROM…") { model.isImportingROM = true }
                     .dropDestination(for:URL.self) { urls,_ in guard let url = urls.first else { return false }; model.selectFile(.success(url),forROM:true); return true }
                 if let image = model.selectedROM?.image {
-                    if image.metadata.saveLayout != nil, model.cartridge?.profile == .linearROMOnly {
-                        Label("This game declares save data, but the selected cartridge profile has no SRAM.",systemImage:"exclamationmark.triangle").font(.callout).foregroundStyle(.secondary)
+                    HStack {
+                        Text(image.metadata.title).font(.callout.weight(.medium)).lineLimit(1)
+                        Spacer()
+                        Button("File Details") { fileDetails = true }.buttonStyle(.plain).foregroundStyle(flashViolet)
+                            .popover(isPresented:$fileDetails) { MetadataView(metadata:image.metadata,checksum:image.checksum).padding(24).frame(width:480) }
                     }
-                    MetadataView(metadata:image.metadata,checksum:image.checksum)
-                    ForEach(image.warnings,id:\.self) { Label($0,systemImage:"exclamationmark.triangle").font(.callout).foregroundStyle(.secondary) }
-                    if let geometry = model.cartridge?.geometry, let size = try? geometry.programLength(image.data.count) {
+                    if let geometry = model.cartridge?.geometry, let bytes = try? geometry.programLength(image.data.count) {
                         let capacity = model.cartridge?.flashCapacity?.bytes ?? 0
-                        Text("\(formatBytes(image.data.count)) file · \(formatBytes(size)) programmed · \(formatBytes(capacity)) usable capacity")
-                            .font(.callout).foregroundStyle(size <= capacity ? Color.primary : Color.red)
-                    } else { Text("Cartridge capacity must be known before writing.").font(.caption).foregroundStyle(.secondary) }
+                        Text("\(formatBytes(bytes)) required including padding · \(formatBytes(capacity)) available")
+                            .font(.caption).foregroundStyle(bytes <= capacity ? Color.secondary : Color.red)
+                    }
+                    if image.metadata.saveLayout != nil, model.cartridge?.saveLayout == nil {
+                        Text("This game expects save memory, but no SRAM is configured.").font(.caption).foregroundStyle(.orange)
+                    }
+                    ForEach(image.warnings,id:\.self) { Text($0).font(.caption).foregroundStyle(.secondary) }
                 }
             }
-            Divider()
-            Toggle("Write save data (SRAM)",isOn:$model.writeSRAM).toggleStyle(.checkbox).disabled(model.profile == .linearROMOnly)
             if model.writeSRAM {
-                FileSelectionView(file:model.selectedSRAM,title:"Choose a compatible save",buttonTitle:"Choose SRAM…") { model.isImportingSRAM = true }
+                FileSelectionView(file:model.selectedSRAM,title:"Choose a save file",buttonTitle:"Choose Save…") { model.isImportingSRAM = true }
                     .dropDestination(for:URL.self) { urls,_ in guard let url = urls.first else { return false }; model.selectFile(.success(url),forROM:false); return true }
-                Picker("Input save format",selection:$model.saveFormat) { ForEach(SaveFormat.allCases) { Text($0.displayName).tag($0) } }
             }
-            Toggle("Back up affected contents before writing",isOn:$model.backupBeforeWrite).toggleStyle(.checkbox)
             HStack {
-                Text(model.writeSRAM ? "Exact save length and byte lane will be validated." : "Existing save bytes are retained; compatibility with a new game is not guaranteed.")
-                    .font(.caption).foregroundStyle(.secondary)
+                Text(model.backupBeforeWrite ? "A verified backup is made before writing." : "Pre-write backup is off.").font(.caption).foregroundStyle(.secondary)
                 Spacer()
-                Button("Review write…") { model.prepareWrite() }.buttonStyle(.borderedProminent)
-                    .disabled(model.demoMode || model.cartridge?.canWrite != true || (!model.writeROM && !model.writeSRAM))
+                Button("Review Write…") { model.prepareWrite() }.buttonStyle(FlashActionStyle()).disabled(!model.canReviewWrite)
             }
-        }
+            if model.cartridge?.canWrite != true {
+                Text("This flash chip has no supported ROM programming algorithm. You can still back up readable contents.").font(.caption).foregroundStyle(.secondary)
+            }
+        }.disabled(model.isBusy)
+    }
+
+    private func selectionCard(_ title:String,subtitle:String,symbol:String,selected:Binding<Bool>,enabled:Bool) -> some View {
+        Button { selected.wrappedValue.toggle() } label: {
+            HStack(spacing:12) {
+                Image(systemName:symbol).font(.system(size:22,weight:.light)).foregroundStyle(selected.wrappedValue && enabled ? flashViolet : .secondary)
+                VStack(alignment:.leading,spacing:5) {
+                    Text(title).font(.system(size:14,weight:.semibold))
+                    Text(subtitle).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal:false,vertical:true)
+                }
+                Spacer(minLength:0)
+                Image(systemName:selected.wrappedValue && enabled ? "checkmark.circle.fill" : "circle").foregroundStyle(selected.wrappedValue && enabled ? flashViolet : Color.secondary.opacity(0.5))
+            }.padding(16).frame(maxWidth:.infinity,minHeight:76,alignment:.leading)
+                .background(selected.wrappedValue && enabled ? flashViolet.opacity(0.09) : Color.primary.opacity(0.025),in:RoundedRectangle(cornerRadius:14))
+                .overlay(RoundedRectangle(cornerRadius:14).strokeBorder(selected.wrappedValue && enabled ? flashViolet.opacity(0.5) : Color.primary.opacity(contrast == .increased ? 0.35 : 0.08),lineWidth:1))
+                .contentShape(RoundedRectangle(cornerRadius:14))
+        }.buttonStyle(.plain).disabled(!enabled).opacity(enabled ? 1 : 0.5)
+            .accessibilityLabel(title).accessibilityValue(selected.wrappedValue && enabled ? "Selected" : "Not selected").accessibilityHint(subtitle)
+    }
+
+    private var advancedPanel: some View {
+        VStack(alignment:.leading,spacing:20) {
+            Text("Advanced Options").font(.title3.weight(.semibold))
+            VStack(alignment:.leading,spacing:10) {
+                Text("Cartridge configuration").font(.headline)
+                Text(model.manualConfiguration ? "Manual settings replace the inferred ROM and SRAM mapping. Flash chip identity, programming support, and readback verification remain automatic." : (model.cartridge?.warning ?? "FlashMD reads flash geometry and game-header information. Automatic settings assume a linear cartridge; bank switching is not implemented.")).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal:false,vertical:true)
+                Picker("Configuration",selection:$model.profile) { ForEach(CartridgeProfile.allCases) { Text($0.displayName).tag($0) } }
+                    .disabled(model.manualConfiguration)
+                Toggle("Override memory configuration",isOn:Binding(get:{model.manualConfiguration},set:{ value in if value { model.useDetectedConfiguration() }; model.manualConfiguration = value }))
+                if model.manualConfiguration {
+                    Picker("Accessible ROM capacity",selection:$model.capacityChoice) {
+                        ForEach([0x10000,0x20000,0x40000,0x80000,0x100000,0x200000,0x300000,0x400000],id:\.self) { Text(formatBytes($0)).tag($0) }
+                        if ![0x10000,0x20000,0x40000,0x80000,0x100000,0x200000,0x300000,0x400000].contains(model.capacityChoice) { Text(formatBytes(model.capacityChoice)).tag(model.capacityChoice) }
+                    }
+                    Text("Limited by the queried flash chip size. Choose the ROM range the board actually exposes; this does not enable bank switching.").font(.caption).foregroundStyle(.secondary)
+                    Toggle("Cartridge has SRAM",isOn:$model.manualSave)
+                    if model.manualSave {
+                        HStack(spacing:14) {
+                            VStack(alignment:.leading,spacing:5) { Text("Start address (hex)").font(.caption); TextField("200001",text:$model.saveStart).textFieldStyle(.roundedBorder).accessibilityLabel("SRAM start address in hexadecimal") }
+                            VStack(alignment:.leading,spacing:5) { Text("End address (hex, inclusive)").font(.caption); TextField("20FFFF",text:$model.saveEnd).textFieldStyle(.roundedBorder).accessibilityLabel("SRAM inclusive end address in hexadecimal") }
+                            Picker("Byte lane",selection:$model.saveLane) { Text("Odd (8-bit)").tag(1); Text("Even (read only)").tag(0); Text("Both (16-bit)").tag(2) }.frame(width:185)
+                        }
+                        Text("Common FlashKit SRAM: 200001–20FFFF, odd lane, 32 KiB of save data. Header addresses describe a game's needs and may cover only part of the physical SRAM. For 16-bit SRAM use an even start and odd end. Overrides are kept for this session.").font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                if let geometry = model.cartridge?.geometry { Text("\(geometry.name) · \(formatBytes(geometry.capacity)) physical flash · \(geometry.sectors.count) erase sectors").font(.caption).foregroundStyle(.secondary) }
+                if model.configurationPending { Button("Apply Configuration") { Task { await model.refresh() } }.buttonStyle(.borderedProminent) }
+            }
+            Divider().opacity(0.4)
+            VStack(alignment:.leading,spacing:10) {
+                Text("Backup and verification").font(.headline)
+                Picker("ROM backup length",selection:$model.backupLength) { ForEach(ROMBackupLength.allCases) { Text($0.title).tag($0) } }
+                Text("Automatic uses the game header's size. If the header is missing, it uses the configured accessible ROM capacity. A full dump includes unused ROM space.").font(.caption).foregroundStyle(.secondary)
+                if model.backupLength == .custom {
+                    LabeledContent("ROM bytes to read") { TextField("2097152",text:$model.forcedROMSize).textFieldStyle(.roundedBorder).accessibilityLabel("ROM bytes to read") }
+                    HStack {
+                        Button("Use Game Size") { model.forcedROMSize = model.cartridge?.romSize.map { String($0.bytes) } ?? "" }.disabled(model.cartridge?.romSize == nil)
+                        Button("Use Capacity") { model.forcedROMSize = model.cartridge?.flashCapacity.map { String($0.bytes) } ?? "" }.disabled(model.cartridge?.flashCapacity == nil)
+                    }
+                    Text("Enter a whole byte count, for example 2097152 for 2 MiB. It must fit within accessible capacity; nothing is silently truncated.").font(.caption).foregroundStyle(.secondary)
+                }
+                Picker("Save file format",selection:$model.saveFormat) { ForEach(SaveFormat.allCases) { Text($0.displayName).tag($0) } }
+                Text("FlashKit raw includes both bus lanes. Packed stores only active save bytes; file lengths are checked before restoration.").font(.caption).foregroundStyle(.secondary)
+                Toggle("Verify backups with a second read",isOn:$model.verifyBackup)
+                Toggle("Back up affected contents before writing",isOn:$model.backupBeforeWrite)
+            }
+            Divider().opacity(0.4)
+            VStack(alignment:.leading,spacing:10) {
+                Text("USB connection").font(.headline)
+                Toggle("Choose a USB programmer manually",isOn:$model.portOverride)
+                if model.portOverride {
+                    Picker("Programmer",selection:$model.selectedPort) {
+                        if model.ports.isEmpty { Text("No USB serial devices found").tag("") }
+                        ForEach(model.ports) { Text($0.name).tag($0.path) }
+                    }
+                }
+                Text("Automatic scanning tries USB serial devices until a FlashKit responds. Manual selection is useful when more than one programmer is connected.").font(.caption).foregroundStyle(.secondary)
+            }
+        }.font(.callout).padding(26).background(panelBackground).disabled(model.isBusy)
+    }
+
+    private var progressPanel: some View {
+        VStack(alignment:.leading,spacing:12) {
+            if let progress = model.progress {
+                HStack {
+                    if progress.phase == .completed { Image(systemName:"checkmark.circle.fill").foregroundStyle(flashMint) }
+                    Text(progress.detail.isEmpty ? progress.phase.rawValue : progress.detail).font(.callout.weight(.medium)).fixedSize(horizontal:false,vertical:true)
+                    Spacer()
+                    if model.operationRunning { Button(progress.cancellable ? "Cancel" : "Stop Safely") { model.cancel() } }
+                }
+                if progress.total > 0 {
+                    ProgressView(value:Double(progress.completed),total:Double(progress.total))
+                    Text(progress.phase == .erasing ? "\(progress.completed) / \(progress.total) sectors" : "\(formatBytes(progress.completed)) / \(formatBytes(progress.total))").font(.caption).foregroundStyle(.secondary).monospacedDigit()
+                }
+                if let start = model.operationStart, model.operationRunning {
+                    TimelineView(.periodic(from:start,by:1)) { context in Text("Elapsed \(Int(context.date.timeIntervalSince(start))) seconds").font(.caption).foregroundStyle(.secondary).monospacedDigit() }
+                }
+            }
+        }.padding(22).background(panelBackground).accessibilityElement(children:.contain)
+    }
+
+    private var footer: some View {
+        HStack(spacing:18) {
+            Circle().fill(model.connected || model.demoMode ? flashMint : Color.secondary.opacity(0.5)).frame(width:6,height:6)
+            Text(model.demoMode ? "Demo mode" : (model.connected ? "FlashKit connected" : (model.ports.isEmpty ? "Connect your FlashKit via USB" : "USB device available · ready to scan")))
+                .font(.caption).foregroundStyle(.secondary)
+                .help(model.connected ? model.selectedPort : "")
+            Spacer()
+            Button { advanced.toggle() } label: {
+                HStack(spacing:5) { Text("Advanced Options"); Image(systemName:advanced ? "chevron.up" : "chevron.down").font(.system(size:9,weight:.semibold)) }
+            }.accessibilityValue(advanced ? "Expanded" : "Collapsed")
+            Button("Activity") { model.showHistory = true }
+        }.buttonStyle(.plain).font(.caption).padding(.horizontal,32).padding(.vertical,20)
+    }
+    private var panelBackground: some View {
+        RoundedRectangle(cornerRadius:22).fill(scheme == .dark ? Color.white.opacity(0.045) : Color.white.opacity(0.72))
+            .overlay(RoundedRectangle(cornerRadius:22).strokeBorder(Color.primary.opacity(contrast == .increased ? 0.35 : 0.07),lineWidth:1))
     }
 }
+
+private struct FlashActionStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var enabled
+    func makeBody(configuration:Configuration) -> some View {
+        configuration.label.font(.system(size:13,weight:.semibold)).foregroundStyle(.white)
+            .padding(.horizontal,22).padding(.vertical,12)
+            .background(flashViolet.opacity(configuration.isPressed ? 0.65 : 1),in:Capsule()).opacity(enabled ? 1 : 0.4)
+    }
+}
+
 struct MetadataView: View {
     let metadata: ROMMetadata
     let checksum: UInt16?
     var body: some View {
-        DisclosureGroup("ROM metadata") {
-            Grid(alignment:.leading,horizontalSpacing:20,verticalSpacing:9) {
+        VStack(alignment:.leading,spacing:20) {
+            Text("Game Details").font(.title2.weight(.semibold))
+            Grid(alignment:.leading,horizontalSpacing:20,verticalSpacing:10) {
                 row("International title",metadata.internationalTitle)
                 row("Domestic title",metadata.domesticTitle)
                 row("System",metadata.console)
                 row("Product / version",metadata.productCode)
                 row("Copyright",metadata.copyright)
-                row("Copyright year",metadata.copyrightYear ?? "Unknown")
+                row("Year",metadata.copyrightYear ?? "Unknown")
                 row("Regions",metadata.regions.joined(separator:" · "))
-                row("Header ROM size",metadata.declaredROMBytes.map(formatBytes) ?? "Unknown")
-                row("Game save layout",metadata.saveLayout.map { "\(formatBytes($0.activeBytes)) active, \($0.lane.map { $0 == 1 ? "odd lane" : "even lane" } ?? "16-bit")" } ?? metadata.saveWarning ?? "None declared")
+                row("Game ROM size",metadata.declaredROMBytes.map(formatBytes) ?? "Unknown")
+                row("Declared save",metadata.saveLayout.map { "\(formatBytes($0.activeBytes)) · \($0.lane.map { $0 == 1 ? "odd lane" : "even lane" } ?? "16-bit")" } ?? metadata.saveWarning ?? "None")
                 row("Input support",metadata.peripherals)
                 row("Header checksum",String(format:"%04X",metadata.storedChecksum))
-                if let checksum { row("Calculated checksum",String(format:"%04X",checksum) + (checksum == metadata.storedChecksum ? " · matches" : " · differs")) }
-            }.font(.callout).padding(.top,10).textSelection(.enabled)
+                if let checksum { row("File checksum",String(format:"%04X",checksum) + (checksum == metadata.storedChecksum ? " · matches" : " · differs")) }
+            }.font(.callout).textSelection(.enabled)
+            Text("These values come from the game header. Developer information is not standardized; the copyright field may name the publisher.").font(.caption).foregroundStyle(.secondary)
         }
     }
-    private func row(_ title:String,_ value:String) -> some View { GridRow { Text(title).foregroundStyle(.secondary); Text(value.isEmpty ? "Unknown" : value).frame(maxWidth:.infinity,alignment:.leading) } }
+    private func row(_ title:String,_ value:String) -> some View { GridRow { Text(title).foregroundStyle(.secondary); Text(value.isEmpty ? "Unknown" : value).fixedSize(horizontal:false,vertical:true).frame(maxWidth:.infinity,alignment:.leading) } }
 }
+
 private struct FileSelectionView: View {
     let file: SelectedFile?
     let title: String
     let buttonTitle: String
     let action: () -> Void
     var body: some View {
-        GroupBox {
-            HStack(spacing:12) {
-                Image(systemName:"doc").font(.title2).foregroundStyle(.tint)
-                VStack(alignment:.leading,spacing:4) {
-                    Text(file?.name ?? title).fontWeight(.medium).lineLimit(1).truncationMode(.middle)
-                    Text(file.map { formatBytes($0.bytes) } ?? "Drop a local file here or choose one").font(.caption).foregroundStyle(.secondary)
-                }; Spacer(); Button(buttonTitle,action:action)
-            }.padding(8)
-        }
+        HStack(spacing:12) {
+            Image(systemName:"doc").font(.title2).foregroundStyle(flashViolet)
+            VStack(alignment:.leading,spacing:4) {
+                Text(file?.name ?? title).fontWeight(.medium).lineLimit(1).truncationMode(.middle)
+                Text(file.map { formatBytes($0.bytes) } ?? "Drop a file here or choose one").font(.caption).foregroundStyle(.secondary)
+            }
+            Spacer()
+            Button(buttonTitle,action:action)
+        }.padding(16).background(Color.primary.opacity(0.025),in:RoundedRectangle(cornerRadius:12))
+            .overlay(RoundedRectangle(cornerRadius:12).strokeBorder(Color.primary.opacity(0.1),style:StrokeStyle(lineWidth:1,dash:[5,4])))
     }
 }
-private struct CartridgeIllustration: View {
+
+/// Original vector artwork scales cleanly with the window and needs no bitmap assets.
+private struct CartridgeArtwork: View {
+    var scanning: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var sweeping = false
     var body: some View {
-        VStack(spacing:0) {
-            RoundedRectangle(cornerRadius:15).fill(Color.primary.opacity(0.85))
-                .overlay { RoundedRectangle(cornerRadius:6).fill(Color.accentColor.gradient).padding(13)
-                    .overlay { VStack(spacing:6) { Text("MEGA DRIVE").font(.system(size:10,weight:.semibold)).tracking(1); Image(systemName:"waveform.path").font(.title2); Text("16 BIT").font(.system(size:10,weight:.semibold)).tracking(2) }.foregroundStyle(.white) } }.frame(width:112,height:105)
-            HStack(spacing:3) { ForEach(0..<13) { _ in Rectangle().fill(Color(red:0.73,green:0.57,blue:0.29)).frame(width:4,height:9) } }
-        }.accessibilityHidden(true)
+        GeometryReader { geometry in
+            let width = geometry.size.width
+            ZStack {
+                RoundedRectangle(cornerRadius:width * 0.11)
+                    .fill(LinearGradient(colors:[Color(red:0.28,green:0.27,blue:0.37),Color(red:0.09,green:0.09,blue:0.14)],startPoint:.topLeading,endPoint:.bottomTrailing))
+                    .overlay(RoundedRectangle(cornerRadius:width * 0.11).strokeBorder(.white.opacity(0.2),lineWidth:1))
+                    .frame(width:width,height:width * 0.79)
+                    .shadow(color:.black.opacity(0.25),radius:16,y:14)
+                VStack(spacing:width * 0.035) {
+                    HStack { ForEach(0..<6) { _ in Capsule().fill(.black.opacity(0.2)).frame(height:width * 0.015) } }.padding(.horizontal,width * 0.1)
+                    ZStack {
+                        RoundedRectangle(cornerRadius:width * 0.04).fill(LinearGradient(colors:[Color(red:0.67,green:0.39,blue:1),Color(red:0.27,green:0.2,blue:0.63)],startPoint:.topLeading,endPoint:.bottomTrailing))
+                        VStack(spacing:width * 0.04) {
+                            Text("MEGA DRIVE").font(.system(size:width * 0.06,weight:.bold,design:.rounded)).tracking(width * 0.008)
+                            Image(systemName:"bolt.fill").font(.system(size:width * 0.22,weight:.light)).foregroundStyle(flashMint)
+                            Text("16–BIT").font(.system(size:width * 0.045,weight:.medium)).tracking(width * 0.015)
+                        }.foregroundStyle(.white)
+                    }.frame(width:width * 0.76,height:width * 0.51)
+                    HStack(spacing:width * 0.018) {
+                        ForEach(0..<16) { _ in RoundedRectangle(cornerRadius:1).fill(LinearGradient(colors:[Color(red:0.9,green:0.76,blue:0.48),Color(red:0.58,green:0.43,blue:0.21)],startPoint:.top,endPoint:.bottom)).frame(width:width * 0.025,height:width * 0.075) }
+                    }.padding(.top,width * 0.08)
+                }.offset(y:width * 0.06)
+                if scanning {
+                    if reduceMotion { RoundedRectangle(cornerRadius:width * 0.11).strokeBorder(flashMint.opacity(0.8),lineWidth:2).frame(height:width * 0.79) }
+                    else {
+                        Rectangle().fill(LinearGradient(colors:[.clear,flashMint.opacity(0.5),flashMint,.clear],startPoint:.top,endPoint:.bottom))
+                            .frame(width:width * 1.13,height:width * 0.035).shadow(color:flashMint,radius:10)
+                            .offset(y:sweeping ? width * 0.36 : -width * 0.36)
+                            .animation(.easeInOut(duration:1.6).repeatForever(autoreverses:true),value:sweeping)
+                    }
+                }
+            }.frame(maxHeight:.infinity).rotation3DEffect(.degrees(-8),axis:(x:0,y:1,z:0))
+        }.onAppear { sweeping = scanning }.onChange(of:scanning) { _,value in sweeping = value }.accessibilityHidden(true)
     }
 }
+
 func formatBytes(_ count:Int) -> String {
     if count >= 1048576 { return "\((Double(count)/1048576).formatted(.number.precision(.fractionLength(0...2)))) MiB" }
     if count >= 1024 { return "\((Double(count)/1024).formatted(.number.precision(.fractionLength(0...2)))) KiB" }

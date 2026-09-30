@@ -68,11 +68,11 @@ import Testing
     device.changedIdentity = true
     #expect(throws:(any Error).self) { try OperationRunner.write(device:device,plan:plan,progress:{_ in}) }; #expect(device.erasures == 0)
 }
-@Test func preflightRejectsMismatchedLengthAndUnqualifiedMapper() throws {
+@Test func preflightRejectsMismatchedLengthsAndAllowsAutomaticConfiguration() throws {
     let device = MemoryDevice(), target = try device.inspect(profile:.krikzz4M)
     #expect(throws:(any Error).self) { try WritePlan(target:target,image:nil,romName:nil,save:Data(count:3),saveName:"bad.srm",format:.raw,backupDestination:nil) }
     let unqualified = try device.inspect(profile:.automatic)
-    #expect(throws:(any Error).self) { try WritePlan(target:unqualified,image:ROMImage(data:fixtureROM()),romName:"new.bin",save:nil,saveName:nil,format:.raw,backupDestination:nil) }
+    _ = try WritePlan(target:unqualified,image:ROMImage(data:fixtureROM()),romName:"new.bin",save:nil,saveName:nil,format:.raw,backupDestination:nil)
     var inconsistent = fixtureROM(); inconsistent[0x1A7] = 0
     #expect(throws:(any Error).self) { try WritePlan(target:target,image:ROMImage(data:inconsistent),romName:"bad.bin",save:nil,saveName:nil,format:.raw,backupDestination:nil) }
 }
@@ -199,6 +199,7 @@ func phaseFailuresRetainAccurateResults(phase:String) throws {
     let romOnly = try device.inspect(profile:.linearROMOnly)
     #expect(romOnly.flashCapacity?.bytes == 0x400000)
     let unqualified = try device.inspect(profile:.automatic)
-    #expect(unqualified.flashCapacity == nil)
+    #expect(unqualified.flashCapacity?.bytes == 0x200000)
+    #expect(unqualified.flashCapacity?.source == .estimated)
     #expect(throws:(any Error).self) { try BackupRequest(cartridge:unqualified,romBytes:0x200001,saveLayout:nil,verify:false,destination:URL(fileURLWithPath:"/tmp")) }
 }

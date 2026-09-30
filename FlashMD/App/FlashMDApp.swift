@@ -9,9 +9,10 @@ struct FlashMDApp: App {
         WindowGroup {
             WorkspaceView(model: model)
                 .onAppear { delegate.model = model }
-                .frame(minWidth: 820, minHeight: 650)
+                .frame(minWidth: 760, minHeight: 700)
         }
-        .defaultSize(width: 1050, height: 760)
+        .windowStyle(.hiddenTitleBar)
+        .defaultSize(width: 960, height: 880)
         .commands {
             CommandGroup(after: .newItem) {
                 Button("Open ROM…", systemImage: "doc.badge.plus") {
@@ -21,14 +22,15 @@ struct FlashMDApp: App {
                 .disabled(model.isBusy || model.showReview)
             }
             CommandMenu("Cartridge") {
-                Button("Refresh", systemImage: "arrow.clockwise") {
+                Button("Scan Cartridge", systemImage: "arrow.clockwise") {
                     Task { await model.refresh() }
                 }
                 .keyboardShortcut("r")
                 .disabled(model.isBusy || model.showReview)
+                Button("Activity…") { model.showHistory = true }.keyboardShortcut("h",modifiers:[.command,.shift])
                 Toggle("Demo Mode", isOn: $model.demoMode).disabled(model.isBusy || model.showReview)
                 Button("Back up cartridge…") { model.startBackup() }.disabled(model.isBusy || model.showReview || !model.connected || model.demoMode)
-                Button("Review write…") { model.prepareWrite() }.disabled(model.isBusy || model.showReview || model.cartridge?.canWrite != true || model.demoMode)
+                Button("Review write…") { model.prepareWrite() }.disabled(model.isBusy || model.showReview || !model.canReviewWrite || model.demoMode)
             }
         }
 

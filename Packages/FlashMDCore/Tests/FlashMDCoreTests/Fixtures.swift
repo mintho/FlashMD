@@ -45,7 +45,9 @@ final class MemoryDevice: CartridgeDevice, @unchecked Sendable {
     init() { rom = fixtureROM() + Data(repeating:0xFF,count:0x400000-65536) }
     func inspect(profile:CartridgeProfile) throws -> CartridgeSnapshot {
         let metadata = try ROMMetadata.parse(rom), geometry = try fixtureGeometry()
-        return .init(title:metadata.title,regions:metadata.regions,romSize:metadata.declaredROMBytes.map { .init(bytes:$0,source:.header) },flashCapacity:profile.usableCapacity(for:geometry),rawSaveWindow:.init(bytes:65536,source:.profile),metadata:metadata,geometry:geometry,saveLayout:profile.saveLayout,identity:identity,fingerprint:changedIdentity ? "changed" : hash(Data(rom.prefix(512))),profile:profile)
+        let layout = profile == .automatic ? metadata.saveLayout : profile.saveLayout
+        let capacity = profile == .automatic ? CartridgeConfiguration.inferredCapacity(geometry:geometry,saveLayout:layout) : profile.usableCapacity(for:geometry)
+        return .init(title:metadata.title,regions:metadata.regions,romSize:metadata.declaredROMBytes.map { .init(bytes:$0,source:.header) },flashCapacity:capacity,rawSaveWindow:.init(bytes:65536,source:.profile),metadata:metadata,geometry:geometry,saveLayout:layout,identity:identity,fingerprint:changedIdentity ? "changed" : hash(Data(rom.prefix(512))),profile:profile)
     }
     func readROM(offset:Int,count:Int) throws -> Data { reads.append(count)
         var block = Data(rom[offset..<offset+count-(shortRead ? 1 : 0)])

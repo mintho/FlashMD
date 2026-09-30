@@ -33,8 +33,8 @@ func hardwareInspection() async throws {
     try await controller.connect(path:port.path)
     let snapshot = try await controller.inspect(profile:.automatic)
     #expect(!snapshot.identity.isEmpty); #expect(snapshot.metadata != nil)
-    #expect(snapshot.geometry?.capacity == 0x800000); #expect(snapshot.flashCapacity == nil)
-    #expect(snapshot.geometry?.supported == true); #expect(snapshot.canWrite == false)
+    #expect(snapshot.geometry?.capacity == 0x800000); #expect(snapshot.flashCapacity?.bytes == 0x200000)
+    #expect(snapshot.geometry?.supported == true); #expect(snapshot.canWrite)
     try await controller.disconnect()
 }
 

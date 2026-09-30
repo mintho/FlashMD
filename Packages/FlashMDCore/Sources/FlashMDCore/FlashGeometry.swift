@@ -62,7 +62,7 @@ public enum CartridgeProfile: String, CaseIterable, Sendable, Codable, Identifia
     public var id: Self { self }
     public var displayName: String {
         switch self {
-        case .automatic: "Inspect only (unqualified mapper)"
+        case .automatic: "Automatic · flash query and game header"
         case .krikzz4M: "Krikzz FlashKit MD · 2 MiB ROM / 32 KiB SRAM"
         case .linearROMOnly: "Linear flash · 4 MiB ROM · no SRAM"
         }

@@ -12,7 +12,10 @@ public actor DisconnectedCartridgeService: CartridgeService {
 public actor DemoCartridgeService: CartridgeService {
     public init() {}
     public func inspect() async throws -> CartridgeSnapshot {
-        .init(title:"Ragnacenty",regions:["Japan","USA","Europe"],romSize:.init(bytes:2097152,source:.sample),flashCapacity:.init(bytes:4194304,source:.sample),rawSaveWindow:.init(bytes:65536,source:.sample),isDemo:true)
+        let layout = try SRAMLayout(start:0x200001,end:0x20FFFF,lane:1)
+        let metadata = ROMMetadata(console:"SEGA MEGA DRIVE",domesticTitle:"Ragnacenty",internationalTitle:"Ragnacenty",productCode:"GM DEMO-00",copyright:"(C)SEGA 1994",copyrightYear:"1994",peripherals:"J",regions:["Japan","USA","Europe"],declaredROMBytes:2097152,storedChecksum:0,saveLayout:layout,saveWarning:nil,rawHeader:Data(repeating:0,count:256))
+        return .init(title:metadata.title,regions:metadata.regions,romSize:.init(bytes:2097152,source:.sample),flashCapacity:.init(bytes:2097152,source:.sample),rawSaveWindow:.init(bytes:65536,source:.sample),isDemo:true,metadata:metadata,saveLayout:layout)
+
     }
 }
 public actor ProgrammerController {
@@ -31,9 +34,9 @@ public actor ProgrammerController {
         guard !operationRunning else { throw FlashMDError.busy }
         device?.close(); device = nil; connectedPath = nil
     }
-    public func inspect(profile: CartridgeProfile) throws -> CartridgeSnapshot {
+    public func inspect(profile: CartridgeProfile, override: CartridgeConfiguration? = nil) throws -> CartridgeSnapshot {
         guard !operationRunning, let device else { throw FlashMDError.invalid("Connect a programmer before inspecting a cartridge.") }
-        do { return try device.inspect(profile:profile) }
+        do { return try device.inspect(profile:profile).applying(override) }
         catch { device.close(); self.device = nil; connectedPath = nil; throw error }
     }
     public func backup(_ request: BackupRequest, progress: @escaping ProgressHandler) throws -> OperationResult {

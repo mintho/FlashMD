@@ -5,38 +5,18 @@ import UniformTypeIdentifiers
 struct WorkspaceView: View {
     @Bindable var model: WorkspaceModel
     var body: some View {
-        NavigationSplitView {
-            List(WorkspacePage.allCases,selection:$model.page) { page in Label(page.title,systemImage:page.symbol).tag(page) }
-                .navigationTitle("FlashMD")
-                .navigationSplitViewColumnWidth(min:180,ideal:200,max:250)
-                .safeAreaInset(edge:.bottom) {
-                    VStack(alignment:.leading,spacing:5) {
-                        Label(model.connectionLabel,systemImage:model.demoMode ? "cube.transparent" : (model.connected ? "checkmark.circle" : "cable.connector"))
-                            .font(.caption.weight(.medium))
-                        Text(model.demoMode ? "Sample cartridge" : (model.connected ? URL(fileURLWithPath:model.selectedPort).lastPathComponent : "Connect FlashKit MD via USB"))
-                            .font(.caption2).foregroundStyle(.secondary).lineLimit(2)
-                    }.frame(maxWidth:.infinity,alignment:.leading).padding(16)
-                }
-        } detail: {
-            Group {
-                switch model.page ?? .cartridge {
-                case .cartridge: CartridgeWorkspaceView(model:model)
-                case .activity: ActivityView(model:model)
-                }
-            }
-            .navigationTitle((model.page ?? .cartridge).title)
-            .toolbar {
-                ToolbarItemGroup {
-                    Toggle(isOn:$model.demoMode) { Label("Demo",systemImage:"cube.transparent") }.disabled(model.isBusy)
-                    Button { Task { await model.refresh() } } label: { Label("Refresh",systemImage:"arrow.clockwise") }.disabled(model.isBusy)
-                }
-            }
-        }
+        CartridgeWorkspaceView(model:model)
         .task { await model.initialize() }
         .background(WindowOperationGuard(busy:model.operationRunning))
         .onReceive(NSWorkspace.shared.notificationCenter.publisher(for:NSWorkspace.willSleepNotification)) { _ in model.handleSleep() }
         .fileImporter(isPresented:$model.isImportingROM,allowedContentTypes:[.data]) { model.selectFile($0,forROM:true) }
         .fileImporter(isPresented:$model.isImportingSRAM,allowedContentTypes:[.data]) { model.selectFile($0,forROM:false) }
+        .sheet(isPresented:$model.showHistory) {
+            VStack(spacing:0) {
+                HStack { Text("Activity").font(.title2.weight(.semibold)); Spacer(); Button("Done") { model.showHistory = false }.keyboardShortcut(.cancelAction) }.padding(24)
+                ActivityView(model:model)
+            }.frame(width:760,height:600)
+        }
         .sheet(isPresented:$model.showReview) { WriteReviewView(model:model) }
         .alert("Couldn’t complete the action",isPresented:Binding(get:{model.errorMessage != nil},set:{if !$0 {model.errorMessage = nil}})) {
             Button("OK") { model.errorMessage = nil }
@@ -55,15 +35,15 @@ struct WriteReviewView: View {
             if let plan = model.reviewPlan {
                 Text(plan.target.title).font(.headline)
                 Text(plan.target.identity).font(.caption).foregroundStyle(.secondary)
-                LabeledContent("Cartridge profile",value:plan.target.profile.displayName)
-                LabeledContent("Usable capacity",value:formatBytes(plan.target.flashCapacity?.bytes ?? 0))
+                LabeledContent("Configuration",value:plan.target.configurationOverride != nil ? "Manual override" : plan.target.profile.displayName)
+                if let capacity = plan.target.flashCapacity { LabeledContent("Usable capacity",value:formatBytes(capacity.bytes)) }
                 if plan.rom != nil {
                     LabeledContent("ROM",value:plan.romName ?? "Game ROM")
                     LabeledContent("Programmed size (including padding)",value:formatBytes(plan.requiredBytes))
                     Text("The current ROM will be replaced.")
                 }
                 if plan.save != nil { LabeledContent("SRAM",value:plan.saveName ?? "Save data"); Text("Existing save data will be replaced.") }
-                else { Text("Existing SRAM bytes will be retained. They may not be compatible with a different game.").foregroundStyle(.secondary) }
+                else if plan.target.saveLayout != nil { Text("Existing SRAM bytes will be retained. They may not be compatible with a different game.").foregroundStyle(.secondary) }
                 Text(plan.backupDestination == nil ? "Pre-write backup is off." : "A verified backup of affected contents will be saved before writing.")
                 Text("Keep USB connected until verification finishes.").font(.callout)
             }
@@ -84,6 +64,9 @@ private struct WindowOperationGuard: NSViewRepresentable {
         DispatchQueue.main.async {
             if let window = view.window {
                 if window.delegate !== context.coordinator { context.coordinator.previous = window.delegate; window.delegate = context.coordinator }
+                window.titlebarAppearsTransparent = true
+                window.titleVisibility = .hidden
+                window.isMovableByWindowBackground = true
                 window.standardWindowButton(.closeButton)?.isEnabled = !busy
             }
         }

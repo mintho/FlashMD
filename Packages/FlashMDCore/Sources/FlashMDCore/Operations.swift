@@ -23,7 +23,7 @@ public struct BackupRequest: Sendable {
     public init(cartridge: CartridgeSnapshot, romBytes: Int?, saveLayout: SRAMLayout?, saveFormat: SaveFormat = .raw, verify: Bool, destination: URL) throws {
         guard romBytes != nil || saveLayout != nil else { throw FlashMDError.invalid("Choose ROM, SRAM, or both.") }
         if let count = romBytes {
-            guard count >= 512, count <= (cartridge.flashCapacity?.bytes ?? 0x200000) else { throw FlashMDError.invalid("ROM backup size exceeds the supported cartridge range. Choose a qualified profile for sizes above 2 MiB.") }
+            guard count >= 512, count <= cartridge.romReadLimit else { throw FlashMDError.invalid("ROM backup size exceeds the supported cartridge range. Scan the cartridge or adjust its accessible capacity in Advanced Options.") }
         }
         self.cartridge = cartridge; self.romBytes = romBytes; self.saveLayout = saveLayout; self.saveFormat = saveFormat; self.verify = verify; self.destination = destination
     }
@@ -44,9 +44,10 @@ public struct WritePlan: Sendable {
     public init(target: CartridgeSnapshot, image: ROMImage?, romName: String?, save: Data?, saveName: String?, format: SaveFormat, backupDestination: URL?) throws {
         guard !target.isDemo else { throw FlashMDError.invalid("Demo cartridges cannot be written.") }
         guard image != nil || save != nil else { throw FlashMDError.invalid("Choose a ROM and/or save file to write.") }
-        guard target.canWrite, let geometry = target.geometry else { throw FlashMDError.invalid("Writing requires a recognized supported flash chip and a qualified cartridge profile with known ROM capacity.") }
+        if image != nil, !target.canWrite { throw FlashMDError.invalid("ROM writing requires a supported flash programming algorithm and known accessible capacity.") }
+        if save != nil, !target.canRestoreSave { throw FlashMDError.invalid("No writable SRAM layout is configured. Adjust Advanced Options.") }
         var representation: Data?
-        if let image {
+        if let image, let geometry = target.geometry {
             guard image.data.count <= geometry.capacity, image.metadata.declaredROMBytes == image.data.count else { throw FlashMDError.invalid("The ROM file/header length is inconsistent or exceeds cartridge capacity.") }
             if image.metadata.saveWarning != nil { throw FlashMDError.invalid("The game uses an unsupported save type.") }
             let length = try geometry.programLength(image.data.count)
@@ -55,7 +56,7 @@ public struct WritePlan: Sendable {
         }
         var rawSave: Data?, layout: SRAMLayout?
         if let save {
-            let incoming = image?.metadata.saveLayout ?? target.metadata?.saveLayout
+            let incoming = image?.metadata.saveLayout ?? target.metadata?.saveLayout ?? target.saveLayout
             guard let incoming, let hardware = target.saveLayout,
                   incoming.base == hardware.base, incoming.lane == hardware.lane, incoming.windowBytes <= hardware.windowBytes else {
                 throw FlashMDError.invalid("The game save layout does not match the selected cartridge profile.")
@@ -64,7 +65,6 @@ public struct WritePlan: Sendable {
             let selectedLayout = fullWindow ? hardware : incoming
             rawSave = try selectedLayout.rawRepresentation(save, format: format); layout = selectedLayout
         }
-        if backupDestination != nil, image != nil, target.romSize == nil { throw FlashMDError.invalid("Back up the current cartridge manually with an exact ROM size, then disable pre-write backup to program a blank/invalid cartridge.") }
         var inputs = [TransferInput]()
         if let image { inputs.append(.init(filename:romName ?? "ROM",bytes:image.data.count,sha256:hash(image.data),saveFormat:nil)) }
         if let save { inputs.append(.init(filename:saveName ?? "SRAM",bytes:save.count,sha256:hash(save),saveFormat:format)) }
@@ -102,6 +102,7 @@ public struct OperationManifest: Codable, Sendable {
     public var phases: [String]
     public var error: String?
     public var inputs: [TransferInput]? = nil
+    public var configurationOverride: CartridgeConfiguration? = nil
     public var programmedROMBytes: Int? = nil
     public var restoredActiveSaveBytes: Int? = nil
 }
@@ -116,16 +117,17 @@ public struct OperationFailure: LocalizedError, Sendable {
 }
 
 public enum OperationRunner {
-    public static func backup(device: any CartridgeDevice, request: BackupRequest, progress: ProgressHandler) throws -> OperationResult {
+    public static func backup(device: any CartridgeDevice, request: BackupRequest, progress: ProgressHandler, allowBlank: Bool = false) throws -> OperationResult {
         let folder = request.destination.appendingPathComponent("FlashMD-\(Int(Date().timeIntervalSince1970))-\(UUID().uuidString.prefix(8))", isDirectory: true)
         var manifest = makeManifest(request.cartridge)
+        manifest.configurationOverride = request.cartridge.configurationOverride
         do {
-            let fresh = try device.inspect(profile: request.cartridge.profile)
-            guard fresh.identity == request.cartridge.identity, fresh.fingerprint == request.cartridge.fingerprint else { throw FlashMDError.invalid("The cartridge changed. Refresh and choose the backup again.") }
+            let fresh = try device.inspect(profile: request.cartridge.profile).applying(request.cartridge.configurationOverride)
+            guard fresh == request.cartridge else { throw FlashMDError.invalid("The cartridge changed. Refresh and choose the backup again.") }
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)
             if let count = request.romBytes {
                 let digest = try streamROMBackup(device, count: count, verify: request.verify,
-                    destination: folder.appendingPathComponent("game.bin"), progress: progress)
+                    destination: folder.appendingPathComponent("game.bin"), progress: progress, allowBlank:allowBlank)
                 manifest.artifacts.append(.init(filename: "game.bin", bytes: count, sha256: digest, verified: request.verify, saveFormat: nil))
                 manifest.phases.append("ROM backup completed")
                 try writeManifest(manifest, folder: folder)
@@ -152,15 +154,16 @@ public enum OperationRunner {
     }
     public static func write(device: any CartridgeDevice, plan: WritePlan, progress: ProgressHandler) throws -> OperationResult {
         var manifest = makeManifest(plan.target), folder: URL?, changed = false
+        manifest.configurationOverride = plan.target.configurationOverride
         manifest.inputs = plan.inputs
         manifest.programmedROMBytes = plan.rom?.count
         manifest.restoredActiveSaveBytes = plan.saveLayout?.activeBytes
         do {
-            let fresh = try device.inspect(profile: plan.target.profile)
+            let fresh = try device.inspect(profile: plan.target.profile).applying(plan.target.configurationOverride)
             guard fresh == plan.target else { throw FlashMDError.invalid("The target cartridge or capacity changed after review. Refresh and review again.") }
             if let destination = plan.backupDestination {
                 let backup = try BackupRequest(cartridge: fresh, romBytes: plan.rom == nil ? nil : max(fresh.romSize?.bytes ?? 0, plan.requiredBytes), saveLayout: plan.save == nil ? nil : fresh.saveLayout, verify: true, destination: destination)
-                let result = try self.backup(device: device, request: backup, progress: progress)
+                let result = try self.backup(device: device, request: backup, progress: progress, allowBlank:true)
                 folder = result.folder; manifest.artifacts = result.manifest.artifacts
                 manifest.phases.append("Pre-write backup verified")
             }
@@ -204,7 +207,7 @@ public enum OperationRunner {
         }
     }
     private static func streamROMBackup(_ device: any CartridgeDevice, count: Int, verify: Bool,
-                                        destination: URL, progress: ProgressHandler) throws -> String {
+                                        destination: URL, progress: ProgressHandler, allowBlank: Bool) throws -> String {
         let temporary = destination.deletingLastPathComponent().appendingPathComponent(".\(UUID().uuidString).partial")
         guard FileManager.default.createFile(atPath: temporary.path, contents: nil) else {
             throw FlashMDError.invalid("The temporary backup file could not be created.")
@@ -223,7 +226,7 @@ public enum OperationRunner {
             hasContent = hasContent || block.contains { $0 != 0xFF }
             progress(.init(.readingROM, offset + length, count, detail: "Reading ROM"))
         }
-        guard hasContent else { throw FlashMDError.invalid("The ROM read returned only FF bytes. Check cartridge compatibility and contacts.") }
+        guard hasContent || allowBlank else { throw FlashMDError.invalid("The ROM read returned only FF bytes. Check cartridge compatibility and contacts.") }
         try file.synchronize()
         if verify {
             try file.seek(toOffset: 0)

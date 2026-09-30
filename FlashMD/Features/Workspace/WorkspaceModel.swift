@@ -4,11 +4,10 @@ import Observation
 import AppKit
 import IOKit.pwr_mgt
 
-public enum WorkspacePage: String, CaseIterable, Identifiable {
-    case cartridge, activity
-    public var id: Self { self }
-    var title: String { self == .cartridge ? "Cartridge" : "Activity" }
-    var symbol: String { self == .cartridge ? "cpu" : "clock.arrow.circlepath" }
+enum ROMBackupLength: String, CaseIterable, Identifiable {
+    case automatic, full, custom
+    var id: Self { self }
+    var title: String { switch self { case .automatic: "Game size (automatic)"; case .full: "All accessible ROM"; case .custom: "Custom byte count" } }
 }
 struct SelectedFile: Sendable, Identifiable {
     let id = UUID()
@@ -27,11 +26,30 @@ struct SelectedFile: Sendable, Identifiable {
 }
 
 @MainActor @Observable final class WorkspaceModel {
-    var page: WorkspacePage? = .cartridge
     var direction = TransferDirection.backup
     var demoMode = false { didSet { guard oldValue != demoMode else { return }; invalidateReview(); Task { await updateConnectionMode() } } }
-    var profile: CartridgeProfile = .automatic {
-        didSet { if profile == .linearROMOnly { backupSRAM = false; writeSRAM = false }; UserDefaults.standard.set(profile.rawValue,forKey:"profile"); invalidateReview(); if connected { Task { await refresh() } } }
+    var profile: CartridgeProfile = .automatic { didSet { configurationChanged() } }
+    var manualConfiguration = false { didSet { configurationChanged() } }
+    var capacityChoice = 0x400000 { didSet { configurationChanged() } }
+    var manualSave = false { didSet { configurationChanged() } }
+    var saveStart = "200001" { didSet { configurationChanged() } }
+    var saveEnd = "20FFFF" { didSet { configurationChanged() } }
+    var saveLane = 1 { didSet { configurationChanged() } }
+    var portOverride = false
+    var showHistory = false
+    var scanStep = "Connecting to your programmer"
+    var backupLength = ROMBackupLength.automatic
+    var configurationPending = false
+    var configurationOverride: CartridgeConfiguration? {
+        get throws {
+            guard manualConfiguration else { return nil }
+            var layout: SRAMLayout?
+            if manualSave {
+                guard let start = Int(saveStart,radix:16), let end = Int(saveEnd,radix:16) else { throw FlashMDError.invalid("Enter SRAM start and end addresses in hexadecimal, such as 200001 and 20FFFF.") }
+                layout = try SRAMLayout(start:start,end:end,lane:saveLane == 2 ? nil : saveLane)
+            }
+            return try .init(romCapacity:capacityChoice,saveLayout:layout)
+        }
     }
     var ports: [SerialPort] = []
     var selectedPort = "" {
@@ -66,6 +84,18 @@ struct SelectedFile: Sendable, Identifiable {
     var operationRunning = false
     var loadingFile = false
     var isBusy: Bool { isInspecting || operationRunning || loadingFile }
+    var canBackup: Bool { !isBusy && !configurationPending && !demoMode && connected && cartridge != nil && (backupROM || backupSRAM) }
+    var canReviewWrite: Bool {
+        guard !isBusy, !configurationPending, !demoMode, connected, let cartridge, writeROM || writeSRAM else { return false }
+        return (!writeROM || (cartridge.canWrite && selectedROM != nil)) && (!writeSRAM || (cartridge.canRestoreSave && selectedSRAM != nil))
+    }
+    var backupSizeDescription: String {
+        switch backupLength {
+        case .automatic: return (cartridge?.romSize ?? cartridge?.flashCapacity).map { formatBytes($0.bytes) } ?? "Size not yet known"
+        case .full: return cartridge?.flashCapacity.map { formatBytes($0.bytes) + " · full range" } ?? "Capacity unknown"
+        case .custom: return Int(forcedROMSize).map { formatBytes($0) + " · custom" } ?? "Set size in Advanced Options"
+        }
+    }
     var connectionLabel: String { demoMode ? "Demo mode" : (connected ? "Programmer connected" : "No programmer connected") }
     private let controller = ProgrammerController()
     private let history: HistoryStore
@@ -77,39 +107,65 @@ struct SelectedFile: Sendable, Identifiable {
         let folder = FileManager.default.urls(for:.applicationSupportDirectory,in:.userDomainMask)[0].appendingPathComponent("FlashMD",isDirectory:true)
         history = HistoryStore(url:folder.appendingPathComponent("history.json"))
         activity = history.load()
-        if let raw = UserDefaults.standard.string(forKey:"profile"), let value = CartridgeProfile(rawValue:raw) { profile = value }
         backupBeforeWrite = UserDefaults.standard.object(forKey:"backupBeforeWrite") as? Bool ?? true
         verifyBackup = UserDefaults.standard.object(forKey:"verifyBackup") as? Bool ?? true
-        if profile == .linearROMOnly { backupSRAM = false; writeSRAM = false }
     }
     func initialize() async {
         guard !initialized else { return }; initialized = true
         await scanPorts()
-        // Only auto-handshake when there is a single USB serial candidate. No ROM/SRAM writes are performed.
-        if ports.count == 1 { selectedPort = ports[0].path; await connect() }
     }
-    func scanPorts() async { ports = await controller.ports(); if !ports.contains(where: { $0.path == selectedPort }) { selectedPort = ports.first?.path ?? "" } }
-    func connect() async {
-        guard !isBusy, !demoMode, !selectedPort.isEmpty else { return }
-        isInspecting = true; errorMessage = nil; cartridge = nil; invalidateReview()
-        do {
-            try await controller.connect(path:selectedPort); connected = true
-            cartridge = try await controller.inspect(profile:profile)
-            record(.init(title:"Cartridge inspected",detail:cartridge?.title ?? "Unknown cartridge"))
-        } catch { connected = false; errorMessage = error.localizedDescription }
-        isInspecting = false
+    func scanPorts() async {
+        ports = await controller.ports()
+        if !ports.contains(where: { $0.path == selectedPort }) { selectedPort = ports.first?.path ?? "" }
     }
+    // All scan entry points share this flow, including reconnect and the menu shortcut.
     func refresh() async {
         guard !isBusy else { return }
+        isInspecting = true; errorMessage = nil; progress = nil; cartridge = nil; invalidateReview()
+        defer { isInspecting = false }
         if demoMode {
+            scanStep = "Reading sample cartridge"
+            try? await Task.sleep(for:.milliseconds(900))
             cartridge = try? await DemoCartridgeService().inspect()
             record(.init(title:"Demo cartridge inspected",detail:"Sample data · no device access",demo:true)); return
         }
-        if !connected { await scanPorts(); await connect(); return }
-        isInspecting = true; invalidateReview()
-        do { cartridge = try await controller.inspect(profile:profile); record(.init(title:"Cartridge inspected",detail:cartridge?.title ?? "Unknown")) }
-        catch { connected = false; cartridge = nil; errorMessage = error.localizedDescription }
-        isInspecting = false
+        scanStep = "Finding your FlashKit programmer"
+        await scanPorts()
+        let candidates = portOverride ? ports.filter { $0.path == selectedPort } : ports
+        guard !candidates.isEmpty else { connected = false; errorMessage = "No FlashKit USB device was found. Connect your programmer, then scan again."; return }
+        var lastError: Error?
+        for port in candidates {
+            do {
+                scanStep = "Connecting to your programmer"
+                selectedPort = port.path
+                try await controller.connect(path:port.path)
+                connected = true
+                scanStep = "Identifying flash and reading game information"
+                let snapshot = try await controller.inspect(profile:profile,override:configurationOverride)
+                cartridge = snapshot
+                configurationPending = false
+                backupSRAM = snapshot.saveLayout != nil
+                if !snapshot.canWrite { writeROM = false }
+                if snapshot.saveLayout == nil { writeSRAM = false }
+                record(.init(title:"Cartridge inspected",detail:snapshot.title))
+                return
+            } catch { lastError = error; connected = false }
+        }
+        errorMessage = lastError?.localizedDescription ?? "The programmer could not be connected. Try another USB port."
+    }
+    func configurationChanged() {
+        invalidateReview()
+        configurationPending = cartridge != nil
+    }
+    func useDetectedConfiguration() {
+        guard let cartridge else { return }
+        // Preserve the detected values when opening the override editor.
+        capacityChoice = cartridge.flashCapacity?.bytes ?? 0x400000
+        manualSave = cartridge.saveLayout != nil
+        if let layout = cartridge.saveLayout {
+            saveStart = String(layout.start,radix:16).uppercased(); saveEnd = String(layout.end,radix:16).uppercased()
+            saveLane = layout.lane ?? 2
+        }
     }
     func updateConnectionMode() async {
         guard !operationRunning else { return }
@@ -124,7 +180,7 @@ struct SelectedFile: Sendable, Identifiable {
                 defer { loadingFile = false }
                 do {
                     let file = try await Task.detached(priority:.userInitiated) { try SelectedFile(url:url,rom:forROM) }.value
-                    if forROM { selectedROM = file; page = .cartridge; direction = .write } else { selectedSRAM = file }
+                    if forROM { selectedROM = file; direction = .write } else { selectedSRAM = file }
                     record(.init(title:forROM ? "ROM inspected" : "Save selected",detail:file.name))
                 } catch { errorMessage = error.localizedDescription }
             }
@@ -136,20 +192,28 @@ struct SelectedFile: Sendable, Identifiable {
         return panel.runModal() == .OK ? panel.url : nil
     }
     func startBackup() {
-        guard !isBusy, !demoMode, connected, let cartridge else { return }
+        guard !isBusy, !configurationPending, !demoMode, connected, let cartridge else { return }
         do {
             let override = forcedROMSize.trimmingCharacters(in: .whitespacesAndNewlines)
-            if backupROM, !override.isEmpty, Int(override) == nil { throw FlashMDError.invalid("Enter a whole ROM byte count.") }
-            let count = backupROM ? (override.isEmpty ? cartridge.romSize?.bytes : Int(override)) : nil
-            if backupROM, count == nil { throw FlashMDError.invalid("Set an exact ROM byte count for this invalid/blank header.") }
-            if backupSRAM, cartridge.saveLayout == nil { throw FlashMDError.invalid("This profile has no supported SRAM window. Choose ROM only or a cartridge profile with SRAM.") }
+            if backupROM, backupLength == .custom, !override.isEmpty, Int(override) == nil { throw FlashMDError.invalid("Enter a whole ROM byte count.") }
+            let count: Int?
+            if !backupROM { count = nil }
+            else {
+                switch backupLength {
+                case .automatic: count = cartridge.romSize?.bytes ?? cartridge.flashCapacity?.bytes
+                case .full: count = cartridge.flashCapacity?.bytes
+                case .custom: count = Int(override)
+                }
+            }
+            if backupROM, count == nil { throw FlashMDError.invalid("Choose a ROM backup length in Advanced Options. This cartridge has no usable size information.") }
+            if backupSRAM, cartridge.saveLayout == nil { throw FlashMDError.invalid("No SRAM range was detected. Choose ROM only or configure save memory in Advanced Options.") }
             guard let destination = chooseDestination(prompt:"Choose backup destination") else { return }
             let request = try BackupRequest(cartridge:cartridge,romBytes:count,saveLayout:backupSRAM ? cartridge.saveLayout : nil,saveFormat:saveFormat,verify:verifyBackup,destination:destination)
             beginOperation(title:"Cartridge backup") { controller,progress in try await controller.backup(request,progress:progress) }
         } catch { errorMessage = error.localizedDescription }
     }
     func prepareWrite() {
-        guard !isBusy, !demoMode, connected, let cartridge else { return }
+        guard !isBusy, !configurationPending, !demoMode, connected, let cartridge else { return }
         do {
             if writeROM, selectedROM == nil { throw FlashMDError.invalid("Choose the ROM to write.") }
             if writeSRAM, selectedSRAM == nil { throw FlashMDError.invalid("Choose a separate save file to restore.") }
@@ -190,7 +254,7 @@ struct SelectedFile: Sendable, Identifiable {
                 record(.init(title:title,detail:result.manifest.phases.joined(separator:" · "),outcome:result.manifest.outcome,result:result,id:eventID,date:eventDate))
                 completionMessage = title == "Cartridge backup" ? (verifyBackup ? "Backup completed and compared with a second read." : "Backup completed. A second-read verification was not requested.") : "Write completed. All written contents passed readback verification."
                 progress = .init(.completed,detail:completionMessage ?? "Completed")
-                cartridge = try? await controller.inspect(profile:profile)
+                cartridge = try? await controller.inspect(profile:profile,override:configurationOverride)
             } catch {
                 let failure = error as? OperationFailure
                 record(.init(title:title,detail:error.localizedDescription,outcome:failure?.result.manifest.outcome ?? "failed",result:failure?.result,id:eventID,date:eventDate))
