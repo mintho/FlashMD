@@ -154,7 +154,7 @@ struct CartridgeWorkspaceView: View {
                 metric("HEADER ROM SIZE",cartridge.romSize.map { formatBytes($0.bytes) } ?? "No valid header",note:"Declared by the game; may be incomplete")
                     .help("The game header declares this size; it is not a measurement of all ROM contents. Automatic backup reads the complete accessible ROM range.")
                 Rectangle().fill(Color.primary.opacity(0.1)).frame(width:1,height:42)
-                metric("SAVE MEMORY",cartridge.saveLayout.map { formatBytes($0.activeBytes) + " SRAM" } ?? "None declared",note:cartridge.saveLayout == nil ? "Override in Advanced Options" : (cartridge.configurationOverride == nil && cartridge.profile == .automatic ? "From the game header" : "Manual configuration"))
+                metric("SAVE MEMORY",cartridge.saveLayout.map { formatBytes($0.activeBytes) + " SRAM" } ?? "None declared",note:cartridge.saveLayout == nil ? "Override in Advanced Settings" : (cartridge.configurationOverride == nil && cartridge.profile == .automatic ? "From the game header" : "Manual configuration"))
             }.padding(.vertical,compact ? 12 : 18).background(Color.primary.opacity(scheme == .dark ? 0.035 : 0.025),in:RoundedRectangle(cornerRadius:18))
         }.padding(.top,4)
     }
@@ -179,7 +179,7 @@ struct CartridgeWorkspaceView: View {
             }
             if model.direction == .backup { backupPanel } else { writePanel }
             if model.configurationPending {
-                Text("Configuration changed. Apply it in Advanced Options before transferring.").font(.callout).foregroundStyle(.orange)
+                Text("Configuration changed. Apply it in Advanced Settings before transferring.").font(.callout).foregroundStyle(.orange)
             }
         }.padding(22).background(panelBackground)
     }
@@ -297,7 +297,7 @@ struct CartridgeWorkspaceView: View {
 
     private var advancedPanel: some View {
         VStack(alignment:.leading,spacing:20) {
-            Text("Advanced Options").font(.title3.weight(.semibold))
+            Text("Advanced Settings").font(.title3.weight(.semibold))
             VStack(alignment:.leading,spacing:10) {
                 Text("Cartridge configuration").font(.headline)
                 Text(model.manualConfiguration ? "Manual settings replace the inferred ROM and SRAM mapping. Flash chip identity, programming support, and readback verification remain automatic." : (model.cartridge?.warning ?? "FlashMD reads flash geometry and game-header information. Automatic settings assume a linear cartridge; bank switching is not implemented.")).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal:false,vertical:true)
@@ -444,7 +444,7 @@ struct CartridgeWorkspaceView: View {
                 .help(model.connected ? model.selectedPort : "")
             Spacer()
             Button { pendingAdvancedScroll = !advanced; advanced.toggle() } label: {
-                HStack(spacing:5) { Text("Advanced Options"); Image(systemName:advanced ? "chevron.up" : "chevron.down").font(.system(size:9,weight:.semibold)) }
+                HStack(spacing:5) { Text("Advanced Settings"); Image(systemName:advanced ? "chevron.up" : "chevron.down").font(.system(size:9,weight:.semibold)) }
             }.accessibilityValue(advanced ? "Expanded" : "Collapsed")
             Button("Activity") { model.showHistory = true }
         }.buttonStyle(.plain).font(.caption).padding(.horizontal,32).padding(.vertical,20)

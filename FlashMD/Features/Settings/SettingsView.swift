@@ -8,7 +8,7 @@ struct SettingsView: View {
             Section("Workspace") {
                 Toggle("Demo mode",isOn:$model.demoMode)
                 Text("Demo mode uses sample information and cannot write to hardware.").font(.caption).foregroundStyle(.secondary)
-                Text("Cartridges are configured automatically when you scan. Manual memory settings are available in Advanced Options.").font(.caption).foregroundStyle(.secondary)
+                Text("Cartridges are configured automatically when you scan. Manual memory settings are available in Advanced Settings.").font(.caption).foregroundStyle(.secondary)
             }
             Section("Transfers") {
                 Toggle("Back up affected contents before writing",isOn:$model.backupBeforeWrite)

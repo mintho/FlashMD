@@ -97,7 +97,7 @@ struct SelectedFile: Sendable, Identifiable {
         switch backupLength {
         case .automatic: return cartridge.map { formatBytes($0.romReadLimit) + " · complete ROM range" } ?? "Size not yet known"
         case .header: return cartridge?.romSize.map { formatBytes($0.bytes) + " · header only" } ?? "No valid header size"
-        case .custom: return Int(forcedROMSize).map { formatBytes($0) + " · custom" } ?? "Set size in Advanced Options"
+        case .custom: return Int(forcedROMSize).map { formatBytes($0) + " · custom" } ?? "Set size in Advanced Settings"
         }
     }
     var connectionLabel: String { demoMode ? "Demo mode" : (connected ? "Programmer connected" : "No programmer connected") }
@@ -209,8 +209,8 @@ struct SelectedFile: Sendable, Identifiable {
                 case .custom: count = Int(override)
                 }
             }
-            if backupROM, count == nil { throw FlashMDError.invalid("Choose a ROM backup length in Advanced Options. This cartridge has no usable size information.") }
-            if backupSRAM, cartridge.saveLayout == nil { throw FlashMDError.invalid("No SRAM range was detected. Choose ROM only or configure save memory in Advanced Options.") }
+            if backupROM, count == nil { throw FlashMDError.invalid("Choose a ROM backup length in Advanced Settings. This cartridge has no usable size information.") }
+            if backupSRAM, cartridge.saveLayout == nil { throw FlashMDError.invalid("No SRAM range was detected. Choose ROM only or configure save memory in Advanced Settings.") }
             guard let destination = chooseDestination(prompt:"Choose backup destination") else { return }
             let request = try BackupRequest(cartridge:cartridge,romBytes:count,saveLayout:backupSRAM ? cartridge.saveLayout : nil,saveFormat:saveFormat,verify:verifyBackup,destination:destination)
             beginOperation(title:"Cartridge backup") { controller,progress in try await controller.backup(request,progress:progress) }

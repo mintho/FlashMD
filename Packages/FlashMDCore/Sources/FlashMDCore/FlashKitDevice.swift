@@ -96,8 +96,8 @@ public final class FlashKitDevice: CartridgeDevice, @unchecked Sendable {
             // assumption; never mistake the physical chip's size for accessible ROM space.
             capacity = geometry.map { CartridgeConfiguration.inferredCapacity(geometry:$0,saveLayout:layout) }
             let assumption = layout != nil
-                ? "Automatic configuration uses the header's SRAM range and keeps ROM below it. Adjust Advanced Options for a switchable mapper or a different physical save size."
-                : "Automatic configuration assumes linear ROM access up to 4 MiB. A missing save declaration does not prove that the board has no SRAM. Adjust Advanced Options if needed."
+                ? "Automatic configuration uses the header's SRAM range and keeps ROM below it. Adjust Advanced Settings for a switchable mapper or a different physical save size."
+                : "Automatic configuration assumes linear ROM access up to 4 MiB. A missing save declaration does not prove that the board has no SRAM. Adjust Advanced Settings if needed."
             warning = [warning, metadata?.saveWarning, assumption].compactMap { $0 }.joined(separator:" ")
         } else {
             capacity = geometry.flatMap { profile.usableCapacity(for:$0) } ?? profile.romCapacityLimit.map { .init(bytes:$0,source:.profile) }

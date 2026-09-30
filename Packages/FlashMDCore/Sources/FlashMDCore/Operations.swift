@@ -23,7 +23,7 @@ public struct BackupRequest: Sendable {
     public init(cartridge: CartridgeSnapshot, romBytes: Int?, saveLayout: SRAMLayout?, saveFormat: SaveFormat = .raw, verify: Bool, destination: URL) throws {
         guard romBytes != nil || saveLayout != nil else { throw FlashMDError.invalid("Choose ROM, SRAM, or both.") }
         if let count = romBytes {
-            guard count >= 512, count <= cartridge.romReadLimit else { throw FlashMDError.invalid("ROM backup size exceeds the supported cartridge range. Scan the cartridge or adjust its accessible capacity in Advanced Options.") }
+            guard count >= 512, count <= cartridge.romReadLimit else { throw FlashMDError.invalid("ROM backup size exceeds the supported cartridge range. Scan the cartridge or adjust its accessible capacity in Advanced Settings.") }
         }
         self.cartridge = cartridge; self.romBytes = romBytes; self.saveLayout = saveLayout; self.saveFormat = saveFormat; self.verify = verify; self.destination = destination
     }
@@ -45,7 +45,7 @@ public struct WritePlan: Sendable {
         guard !target.isDemo else { throw FlashMDError.invalid("Demo cartridges cannot be written.") }
         guard image != nil || save != nil else { throw FlashMDError.invalid("Choose a ROM and/or save file to write.") }
         if image != nil, !target.canWrite { throw FlashMDError.invalid("ROM writing requires a supported flash programming algorithm and known accessible capacity.") }
-        if save != nil, !target.canRestoreSave { throw FlashMDError.invalid("No writable SRAM layout is configured. Adjust Advanced Options.") }
+        if save != nil, !target.canRestoreSave { throw FlashMDError.invalid("No writable SRAM layout is configured. Adjust Advanced Settings.") }
         var representation: Data?
         if let image, let geometry = target.geometry {
             guard image.data.count <= geometry.capacity, image.metadata.declaredROMBytes == image.data.count else { throw FlashMDError.invalid("The ROM file/header length is inconsistent or exceeds cartridge capacity.") }
