@@ -182,7 +182,14 @@ struct CartridgeWorkspaceView: View {
                 Text(model.direction == .backup ? "CARTRIDGE → MAC" : "MAC → CARTRIDGE")
                     .font(.system(size:9,weight:.semibold)).tracking(1.5).foregroundStyle(.secondary)
             }
-            if model.direction == .backup { backupPanel } else { writePanel }
+            // Both panels determine the shared height, so switching tabs never
+            // moves the cartridge summary or the tab controls.
+            ZStack(alignment:.topLeading) {
+                if model.direction == .backup { backupPanel }
+                else { backupPanel.hidden().allowsHitTesting(false).accessibilityHidden(true) }
+                if model.direction == .write { writePanel }
+                else { writePanel.hidden().allowsHitTesting(false).accessibilityHidden(true) }
+            }
             if model.configurationPending {
                 Text("Configuration changed. Apply it in Advanced Settings before transferring.").font(.callout).foregroundStyle(.orange)
             }
