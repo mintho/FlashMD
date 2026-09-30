@@ -30,7 +30,7 @@ struct FlashMDApp: App {
                 Button("Activity…") { model.showHistory = true }.keyboardShortcut("h",modifiers:[.command,.shift])
                 Toggle("Demo Mode", isOn: $model.demoMode).disabled(model.isBusy || model.showReview)
                 Button("Back up cartridge…") { model.startBackup() }.disabled(model.isBusy || model.showReview || !model.connected || model.demoMode)
-                Button("Review write…") { model.prepareWrite() }.disabled(model.isBusy || model.showReview || !model.canReviewWrite || model.demoMode)
+                Button("Write to cartridge…") { model.prepareWrite() }.disabled(model.isBusy || model.showReview || !model.canReviewWrite || model.demoMode)
             }
         }
 

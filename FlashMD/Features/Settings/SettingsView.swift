@@ -7,14 +7,16 @@ struct SettingsView: View {
         Form {
             Section("Workspace") {
                 Toggle("Demo mode",isOn:$model.demoMode)
-                Text("Demo mode uses sample information and cannot write to hardware.").font(.caption).foregroundStyle(.secondary)
-                Text("Cartridges are configured automatically when you scan. Manual memory settings are available in Advanced Settings.").font(.caption).foregroundStyle(.secondary)
+                Text("Preview with sample data. No hardware access.").font(.caption).foregroundStyle(.secondary)
+                Text("Scan to detect your cartridge. Manual configuration is in Advanced Settings.").font(.caption).foregroundStyle(.secondary)
             }
-            Section("Transfers") {
-                Toggle("Back up cartridge before writing",isOn:$model.backupBeforeWrite)
-                Text("Saves the cartridge's current ROM and SRAM in a folder you choose, then verifies them before writing. Save-only writes back up SRAM.").font(.caption).foregroundStyle(.secondary)
-                Toggle("Compare backups with a second read",isOn:$model.verifyBackup)
-                Text("Supported flash: ST M29W320ET/EB and AMD/Spansion S29GL064N boot-sector models. Automatic ROM access is limited to 4 MiB, or to the start of header-declared SRAM. Additional mappings can be configured manually within that range.").font(.caption).foregroundStyle(.secondary)
+            Section("Backup") {
+                Toggle("Verify backup",isOn:$model.verifyBackup)
+                Text("Reads twice and compares the results.").font(.caption).foregroundStyle(.secondary)
+            }
+            Section("Writing") {
+                Toggle("Clear unused ROM space",isOn:$model.clearUnusedROM)
+                Text("Erases cartridge ROM beyond the new game.").font(.caption).foregroundStyle(.secondary)
             }
             Section("Licensing") {
                 Text("FlashMD · GNU GPLv3").font(.callout)

@@ -23,7 +23,7 @@ public enum FlashMDError: LocalizedError, Sendable, Equatable {
 public enum SaveFormat: String, CaseIterable, Codable, Sendable, Identifiable {
     case raw, packed
     public var id: Self { self }
-    public var displayName: String { self == .raw ? "Raw bus dump (FlashKit)" : "Packed save bytes" }
+    public var displayName: String { self == .raw ? "FlashKit raw dump" : "Save data" }
 }
 
 public struct SRAMLayout: Codable, Sendable, Equatable {

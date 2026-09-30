@@ -228,7 +228,7 @@ public enum OperationRunner {
             if let original = preservedSave, let layout = preservedLayout {
                 var after = try readSave(device,layout:layout,progress:{ value in progress(.init(.verifying,value.completed,value.total,detail:"Checking existing save data")) })
                 if try layout.pack(after) != layout.pack(original) {
-                    guard fresh.canRestoreSave else { throw FlashMDError.invalid("Existing SRAM changed and cannot be restored with this layout. Use the pre-write backup to recover it.") }
+                    guard fresh.canRestoreSave else { throw FlashMDError.invalid("Existing saves changed and cannot be restored with these SRAM settings. Recover them from a backup.") }
                     try device.restore(layout:layout,raw:original)
                     after = try readSave(device,layout:layout,progress:progress)
                     manifest.phases.append("Existing SRAM recovered")
@@ -245,7 +245,7 @@ public enum OperationRunner {
             if let failure = error as? OperationFailure { throw failure }
             manifest.outcome = (error is CancellationError || error as? FlashMDError == .cancelled) ? "cancelled" : "failed"; manifest.error = error.localizedDescription
             if let folder { try? writeManifest(manifest, folder: folder) }
-            let message = error.localizedDescription + (changed ? " Cartridge contents may be incomplete. Refresh and program again from the original files; reconnecting will not resume this write." : " No cartridge contents were changed.")
+            let message = error.localizedDescription + (changed ? " Cartridge contents may be incomplete. Scan again and rewrite from the original files." : " Cartridge contents were not changed.")
             throw OperationFailure(result: .init(folder: folder, manifest: manifest), message: message)
         }
     }

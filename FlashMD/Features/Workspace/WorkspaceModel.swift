@@ -7,7 +7,17 @@ import IOKit.pwr_mgt
 enum ROMBackupLength: String, CaseIterable, Identifiable {
     case suggested, complete, header, custom
     var id: Self { self }
-    var title: String { switch self { case .suggested: "Suggested size (default)"; case .complete: "Back Up Complete ROM"; case .header: "Header size only"; case .custom: "Custom byte count" } }
+    var title: String { switch self { case .suggested: "Suggested size"; case .complete: "Complete ROM"; case .header: "Header size"; case .custom: "Custom size" } }
+}
+enum SaveImportFormat: String, CaseIterable, Identifiable {
+    case automatic, packed, raw
+    var id: Self { self }
+    var title: String { switch self { case .automatic: "Automatic"; case .packed: "Save data"; case .raw: "FlashKit raw dump" } }
+    var explanation: String { switch self {
+        case .automatic: "Detects the format from the file size and cartridge."
+        case .packed: "A file containing only save bytes."
+        case .raw: "A full FlashKit SRAM dump, including unused bytes."
+    } }
 }
 struct SelectedFile: Sendable, Identifiable {
     let id = UUID()
@@ -67,9 +77,18 @@ struct SelectedFile: Sendable, Identifiable {
     var writeROM = true { didSet { invalidateReview() } }
     var writeSRAM = false { didSet { invalidateReview() } }
     var clearUnusedROM = true { didSet { invalidateReview() } }
-    var backupBeforeWrite = true { didSet { UserDefaults.standard.set(backupBeforeWrite,forKey:"backupBeforeWrite"); invalidateReview() } }
     var verifyBackup = true { didSet { UserDefaults.standard.set(verifyBackup,forKey:"verifyBackup") } }
-    var saveFormat: SaveFormat = .raw { didSet { invalidateReview() } }
+    var saveFormat: SaveFormat = .packed
+    var saveImportFormat: SaveImportFormat = .automatic { didSet { invalidateReview() } }
+    var backupLengthExplanation: String { switch backupLength {
+        case .suggested: "Uses the size suggested by the scan."
+        case .complete: "Includes all accessible ROM, even unused space."
+        case .header: "Uses the game's declared size. May miss data."
+        case .custom: "Reads the number of bytes you enter."
+    } }
+    var saveFormatExplanation: String {
+        saveFormat == .packed ? "Only save bytes. Recommended for everyday backups." : "Full FlashKit SRAM dump, including unused bytes."
+    }
     var forcedROMSize = ""
     var selectedROM: SelectedFile? { didSet { invalidateReview() } }
     var selectedSRAM: SelectedFile? { didSet { invalidateReview() } }
@@ -116,7 +135,6 @@ struct SelectedFile: Sendable, Identifiable {
         let folder = FileManager.default.urls(for:.applicationSupportDirectory,in:.userDomainMask)[0].appendingPathComponent("FlashMD",isDirectory:true)
         history = HistoryStore(url:folder.appendingPathComponent("history.json"))
         activity = history.load()
-        backupBeforeWrite = UserDefaults.standard.object(forKey:"backupBeforeWrite") as? Bool ?? true
         verifyBackup = UserDefaults.standard.object(forKey:"verifyBackup") as? Bool ?? true
     }
     func initialize() async {
@@ -237,12 +255,44 @@ struct SelectedFile: Sendable, Identifiable {
         do {
             if writeROM, selectedROM == nil { throw FlashMDError.invalid("Choose the ROM to write.") }
             if writeSRAM, selectedSRAM == nil { throw FlashMDError.invalid("Choose a separate save file to restore.") }
-            let destination = backupBeforeWrite ? chooseDestination(prompt:"Choose cartridge backup folder") : nil
-            if backupBeforeWrite, destination == nil { return }
-            reviewPlan = try WritePlan(target:cartridge,image:writeROM ? selectedROM?.image : nil,romName:selectedROM?.name,
-                save:writeSRAM ? selectedSRAM?.data : nil,saveName:selectedSRAM?.name,format:saveFormat,backupDestination:destination,clearUnusedROM:clearUnusedROM)
+            let image = writeROM ? selectedROM?.image : nil
+            let save = writeSRAM ? selectedSRAM?.data : nil
+            func plan(_ format: SaveFormat, save: Data?) throws -> WritePlan {
+                try WritePlan(target:cartridge,image:image,romName:writeROM ? selectedROM?.name : nil,
+                    save:save,saveName:writeSRAM ? selectedSRAM?.name : nil,format:format,backupDestination:nil,clearUnusedROM:clearUnusedROM)
+            }
+            // Validate ROM independently so an invalid ROM is never reported as a save-format problem.
+            if image != nil { _ = try plan(.packed,save:nil) }
+            if let save, saveImportFormat == .automatic {
+                let candidates = SaveFormat.allCases.compactMap { try? plan($0,save:save) }
+                guard let first = candidates.first else { throw FlashMDError.invalid("This save file does not match the cartridge. Check the save format and SRAM settings in Advanced Settings.") }
+                guard candidates.allSatisfy({ $0.save == first.save && $0.saveLayout == first.saveLayout }) else {
+                    throw FlashMDError.invalid("The save format is ambiguous. Choose Save data or FlashKit raw dump in Advanced Settings.")
+                }
+                reviewPlan = first
+            } else {
+                reviewPlan = try plan(saveImportFormat == .raw ? .raw : .packed,save:save)
+            }
             showReview = true
         } catch { errorMessage = error.localizedDescription }
+    }
+    var writeActionTitle: String {
+        guard let plan = reviewPlan else { return "Write" }
+        if plan.rom != nil && plan.save != nil { return "Write Both" }
+        return plan.rom != nil ? "Write ROM" : "Write Saves"
+    }
+    var writeConfirmationTitle: String {
+        guard let plan = reviewPlan else { return "Write to cartridge?" }
+        if plan.rom != nil && plan.save != nil { return "Replace game and saves?" }
+        return plan.rom != nil ? "Replace cartridge ROM?" : "Replace cartridge saves?"
+    }
+    var writeConfirmationMessage: String {
+        guard let plan = reviewPlan else { return "" }
+        let change: String
+        if plan.rom != nil && plan.save != nil { change = "The existing game and saves will be overwritten." }
+        else if plan.rom != nil { change = "The existing game will be overwritten." + (plan.target.saveLayout != nil ? " SRAM saves will be preserved." : "") }
+        else { change = "Existing cartridge saves will be overwritten." }
+        return "\(plan.target.title)\n\n\(change)\n\nThis cannot be undone without a backup."
     }
     func confirmWrite() {
         guard !isBusy, !demoMode, let plan = reviewPlan else { return }
@@ -274,8 +324,8 @@ struct SelectedFile: Sendable, Identifiable {
                 progressID = nil
                 operationResult = result
                 record(.init(title:title,detail:result.manifest.phases.joined(separator:" · "),outcome:result.manifest.outcome,result:result,id:eventID,date:eventDate))
-                completionMessage = title == "Cartridge backup" ? (verifyBackup ? "Backup completed and compared with a second read." : "Backup completed. A second-read verification was not requested.") : "Write completed. All written contents passed readback verification."
-                if result.manifest.preservedSaveSHA256 != nil { completionMessage = "ROM write verified. Existing save data was preserved and checked." }
+                completionMessage = title == "Cartridge backup" ? (verifyBackup ? "Files saved and verified." : "Files saved. Verification was off.") : "Written and verified."
+                if result.manifest.preservedSaveSHA256 != nil { completionMessage = "ROM written and verified. Existing saves preserved." }
                 progress = .init(.completed,detail:completionMessage ?? "Completed")
                 cartridge = try? await controller.inspect(profile:profile,override:configurationOverride)
                 if title == "Cartridge write" { contentAnalysis = nil }
