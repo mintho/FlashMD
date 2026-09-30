@@ -213,7 +213,7 @@ struct CartridgeWorkspaceView: View {
             }
             HStack(spacing:12) {
                 selectionCard("Game ROM",subtitle:model.backupSizeDescription,symbol:"gamecontroller",selected:$model.backupROM,enabled:true)
-                selectionCard("Save data",subtitle:model.cartridge?.saveLayout.map { formatBytes($0.activeBytes) + " of SRAM" } ?? "No SRAM configured",symbol:"externaldrive",selected:$model.backupSRAM,enabled:model.cartridge?.saveLayout != nil)
+                selectionCard("SRAM data",subtitle:model.cartridge?.saveLayout.map { formatBytes($0.activeBytes) + " of save data" } ?? "No SRAM configured",symbol:"externaldrive",selected:$model.backupSRAM,enabled:model.cartridge?.saveLayout != nil)
             }
             if model.backupROM, let analysis = model.contentAnalysis, let suggested = analysis.suggestedBytes {
                 HStack(spacing:12) {
@@ -254,7 +254,7 @@ struct CartridgeWorkspaceView: View {
             Text(model.writeROM && !model.writeSRAM && model.cartridge?.saveLayout != nil ? "Write a game. Keep your existing saves." : "Choose what to write to your cartridge.").font(.callout).foregroundStyle(.secondary)
             HStack(spacing:12) {
                 writeFileCard("Game ROM",file:model.selectedROM,selected:$model.writeROM,enabled:model.cartridge?.canWrite == true,forROM:true)
-                writeFileCard("Save data",file:model.selectedSRAM,selected:$model.writeSRAM,enabled:model.cartridge?.canRestoreSave == true,forROM:false)
+                writeFileCard("SRAM data",file:model.selectedSRAM,selected:$model.writeSRAM,enabled:model.cartridge?.canRestoreSave == true,forROM:false)
             }
             if model.writeROM, let image = model.selectedROM?.image {
                 if let geometry = model.cartridge?.geometry, let bytes = try? geometry.programLength(model.clearUnusedROM ? (model.cartridge?.romReadLimit ?? image.data.count) : image.data.count) {
@@ -279,21 +279,21 @@ struct CartridgeWorkspaceView: View {
 
     private func writeFileCard(_ title:String,file:SelectedFile?,selected:Binding<Bool>,enabled:Bool,forROM:Bool) -> some View {
         VStack(alignment:.leading,spacing:10) {
-            Button { selected.wrappedValue.toggle() } label: {
-                HStack {
-                    Text(title).font(.callout.weight(.semibold))
-                    Spacer()
-                    Image(systemName:selected.wrappedValue ? "checkmark.circle.fill" : "circle").foregroundStyle(selected.wrappedValue ? flashViolet : .secondary)
-                }.contentShape(Rectangle())
-            }.buttonStyle(.plain).accessibilityLabel("Write " + title).accessibilityValue(selected.wrappedValue ? "Selected" : "Not selected")
+            HStack {
+                Text(title).font(.callout.weight(.semibold))
+                Spacer()
+                Image(systemName:selected.wrappedValue && enabled ? "checkmark.circle.fill" : "circle").foregroundStyle(selected.wrappedValue && enabled ? flashViolet : .secondary)
+            }.allowsHitTesting(false)
             VStack(alignment:.leading,spacing:4) {
                 Text(file?.name ?? (enabled ? "Drop a file or choose one" : "Unavailable for this cartridge")).font(.caption).lineLimit(1).truncationMode(.middle)
-                if let file { Text(formatBytes(file.bytes)).font(.caption2).foregroundStyle(.secondary) }
-            }.frame(height:30,alignment:.top).foregroundStyle(.secondary)
+                if !forROM, let layout = model.cartridge?.saveLayout {
+                    Text("\(formatBytes(layout.activeBytes)) of save data").font(.caption2)
+                } else if let file { Text(formatBytes(file.bytes)).font(.caption2) }
+            }.frame(height:30,alignment:.top).foregroundStyle(.secondary).allowsHitTesting(false)
             HStack {
-                Button(forROM ? "Choose ROM…" : "Choose Save…") {
+                Button(forROM ? "Choose ROM…" : "Choose SRAM…") {
                     if forROM { model.isImportingROM = true } else { model.isImportingSRAM = true }
-                }.controlSize(.small).disabled(!selected.wrappedValue)
+                }.controlSize(.small).disabled(!selected.wrappedValue).allowsHitTesting(selected.wrappedValue)
                 Spacer(minLength:0)
                 if let image = file?.image {
                     Button("Details") { fileDetails = true }.buttonStyle(.plain).foregroundStyle(flashViolet)
@@ -306,8 +306,15 @@ struct CartridgeWorkspaceView: View {
                 }
             }.font(.caption)
         }.padding(14).frame(maxWidth:.infinity,alignment:.leading)
-            .background(selected.wrappedValue && enabled ? flashViolet.opacity(0.09) : Color.primary.opacity(0.025),in:RoundedRectangle(cornerRadius:14))
-            .overlay(RoundedRectangle(cornerRadius:14).strokeBorder(selected.wrappedValue && enabled ? flashViolet.opacity(0.5) : Color.primary.opacity(contrast == .increased ? 0.35 : 0.08),lineWidth:1))
+            .background {
+                Button { selected.wrappedValue.toggle() } label: {
+                    RoundedRectangle(cornerRadius:14)
+                        .fill(selected.wrappedValue && enabled ? flashViolet.opacity(0.09) : Color.primary.opacity(0.025))
+                        .overlay(RoundedRectangle(cornerRadius:14).strokeBorder(selected.wrappedValue && enabled ? flashViolet.opacity(0.5) : Color.primary.opacity(contrast == .increased ? 0.35 : 0.08),lineWidth:1))
+                        .contentShape(RoundedRectangle(cornerRadius:14))
+                }.buttonStyle(.plain).accessibilityLabel("Write " + title)
+                    .accessibilityValue(selected.wrappedValue && enabled ? "Selected" : "Not selected")
+            }
             .disabled(!enabled).opacity(enabled ? 1 : 0.5)
             .dropDestination(for:URL.self) { urls,_ in
                 guard enabled, !model.isBusy, let url = urls.first else { return false }
@@ -447,7 +454,7 @@ struct CartridgeWorkspaceView: View {
                             ForEach(result.manifest.artifacts,id:\.filename) { artifact in
                                 HStack {
                                     Image(systemName:artifact.isROM ? "gamecontroller" : "externaldrive").foregroundStyle(flashViolet)
-                                    Text(artifact.isROM ? "Game ROM · \(artifact.filename)" : "Save data · \(artifact.filename)").font(.callout.weight(.medium)).lineLimit(1).truncationMode(.middle)
+                                    Text(artifact.isROM ? "Game ROM · \(artifact.filename)" : "SRAM data · \(artifact.filename)").font(.callout.weight(.medium)).lineLimit(1).truncationMode(.middle)
                                     Spacer()
                                     Text(formatBytes(artifact.bytes)).font(.caption).foregroundStyle(.secondary)
                                     if artifact.verified { Image(systemName:"checkmark.seal").foregroundStyle(flashMint).help("Verified with a second read") }
