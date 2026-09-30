@@ -19,11 +19,12 @@ struct CartridgeWorkspaceView: View {
         ZStack {
             backdrop
             VStack(spacing:0) {
-                HStack {
-                    Text("FlashMD").font(.system(size:16,weight:.semibold,design:.rounded)).tracking(0.3)
-                    Spacer()
-                    if model.demoMode { Text("DEMO · SAMPLE DATA").font(.caption.weight(.semibold)).tracking(1).foregroundStyle(.secondary) }
-                }.padding(.horizontal,32).padding(.top,24).padding(.bottom,8)
+                if model.demoMode {
+                    HStack {
+                        Spacer()
+                        Text("DEMO · SAMPLE DATA").font(.caption.weight(.semibold)).tracking(1).foregroundStyle(.secondary)
+                    }.padding(.horizontal,32).padding(.top,24).padding(.bottom,8)
+                }
                 GeometryReader { viewport in
                 ScrollViewReader { scroll in
                 ScrollView {

@@ -42,6 +42,7 @@ struct FlashMDApp: App {
 
 @MainActor final class AppDelegate: NSObject, NSApplicationDelegate {
     weak var model: WorkspaceModel?
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard model?.operationRunning == true else { return .terminateNow }
         let alert = NSAlert()
