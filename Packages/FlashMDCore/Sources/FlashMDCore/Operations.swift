@@ -213,7 +213,7 @@ public enum OperationRunner {
     }
     private static func streamROMBackup(_ device: any CartridgeDevice, count: Int, verify: Bool,
                                         destination: URL, progress: ProgressHandler, allowBlank: Bool) throws -> String {
-        let temporary = destination.deletingLastPathComponent().appendingPathComponent(".\(UUID().uuidString).partial")
+        let temporary = destination.deletingLastPathComponent().appendingPathComponent("FlashMD-\(UUID().uuidString).partial")
         guard FileManager.default.createFile(atPath: temporary.path, contents: nil) else {
             throw FlashMDError.invalid("The temporary backup file could not be created.")
         }
@@ -274,18 +274,20 @@ public enum OperationRunner {
         if let offset = expected.indices.first(where: { expected[$0] != actual[$0] }) { throw FlashMDError.mismatch(offset) }
     }
     private static func publish(_ data: Data, to destination: URL) throws {
-        let temporary = destination.deletingLastPathComponent().appendingPathComponent(".\(UUID().uuidString).partial")
+        let temporary = destination.deletingLastPathComponent().appendingPathComponent("FlashMD-\(UUID().uuidString).partial")
         defer { try? FileManager.default.removeItem(at: temporary) }
         try data.write(to: temporary, options: .atomic)
         try publishFile(temporary, to: destination)
     }
     private static func publishFile(_ temporary: URL, to destination: URL) throws {
-        // macOS can mark a dot-prefixed temporary file with UF_HIDDEN.
-        // A rename preserves that flag, so clear it before publishing the finished file.
+        // File providers can asynchronously mark dot-prefixed staging files as hidden.
+        // Use a regular .partial name, and ensure the final name is visible after moving it.
         var visible = temporary, values = URLResourceValues()
         values.isHidden = false
         try visible.setResourceValues(values)
         try FileManager.default.moveItem(at: temporary,to: destination)
+        visible = destination
+        try visible.setResourceValues(values)
     }
     static func backupName(for title: String) -> String {
         let invalid = CharacterSet(charactersIn:"/\\:*?\"<>|").union(.controlCharacters)
