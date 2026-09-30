@@ -11,6 +11,7 @@ struct CartridgeWorkspaceView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.colorSchemeContrast) private var contrast
     @State private var advanced = false
+    @State private var pendingAdvancedScroll = false
     @State private var details = false
     @State private var fileDetails = false
 
@@ -23,6 +24,7 @@ struct CartridgeWorkspaceView: View {
                     Spacer()
                     if model.demoMode { Text("DEMO · SAMPLE DATA").font(.caption.weight(.semibold)).tracking(1).foregroundStyle(.secondary) }
                 }.padding(.horizontal,32).padding(.top,24).padding(.bottom,8)
+                GeometryReader { viewport in
                 ScrollViewReader { scroll in
                 ScrollView {
                     VStack(spacing:26) {
@@ -31,18 +33,37 @@ struct CartridgeWorkspaceView: View {
                             transferPanel
                             if model.progress != nil { progressPanel.id("transferProgress") }
                         } else { scanWelcome }
-                        if advanced { advancedPanel.id("advanced").transition(.opacity) }
-                    }.id("workspaceTop").padding(.horizontal,36).padding(.top,16).padding(.bottom,24)
+                        if advanced {
+                            advancedPanel
+                                .frame(minHeight:max(0,viewport.size.height - 24),alignment:.top)
+                                .id("advanced")
+                                .background {
+                                    GeometryReader { panel in
+                                        Color.clear.task(id:panel.size.height) {
+                                            guard panel.size.height > 0, pendingAdvancedScroll else { return }
+                                            // The insertion transition changes the scroll document size.
+                                            // Wait for that transition before resolving its new target frame.
+                                            do { try await Task.sleep(for:.milliseconds(reduceMotion ? 50 : 300)) }
+                                            catch { return }
+                                            guard advanced, !Task.isCancelled else { return }
+                                            pendingAdvancedScroll = false
+                                            withAnimation(reduceMotion ? nil : .easeInOut(duration:0.3)) {
+                                                scroll.scrollTo("advanced",anchor:.top)
+                                            }
+                                        }
+                                    }
+                                }
+                                .transition(.opacity)
+                        }
+                    }.overlay(alignment:.top) { Color.clear.frame(height:1).id("workspaceTop") }.padding(.horizontal,36).padding(.top,16).padding(.bottom,24)
                         .frame(maxWidth:880).frame(maxWidth:.infinity)
-                }
-                .onChange(of:advanced) { _,expanded in
-                    if expanded { withAnimation(reduceMotion ? nil : .easeInOut(duration:0.25)) { scroll.scrollTo("advanced",anchor:.top) } }
                 }
                 .onChange(of:model.operationRunning) { _,running in
                     if running { withAnimation(reduceMotion ? nil : .easeInOut(duration:0.25)) { scroll.scrollTo("transferProgress",anchor:.bottom) } }
                 }
                 .onChange(of:model.isInspecting) { _,scanning in
                     if scanning { scroll.scrollTo("workspaceTop",anchor:.top) }
+                }
                 }
                 }
                 footer
@@ -335,7 +356,7 @@ struct CartridgeWorkspaceView: View {
                 .font(.caption).foregroundStyle(.secondary)
                 .help(model.connected ? model.selectedPort : "")
             Spacer()
-            Button { advanced.toggle() } label: {
+            Button { pendingAdvancedScroll = !advanced; advanced.toggle() } label: {
                 HStack(spacing:5) { Text("Advanced Options"); Image(systemName:advanced ? "chevron.up" : "chevron.down").font(.system(size:9,weight:.semibold)) }
             }.accessibilityValue(advanced ? "Expanded" : "Collapsed")
             Button("Activity") { model.showHistory = true }
