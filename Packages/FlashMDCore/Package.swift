@@ -6,7 +6,8 @@ let package = Package(
     platforms: [.macOS(.v14)],
     products: [.library(name: "FlashMDCore", targets: ["FlashMDCore"])],
     targets: [
-        .target(name: "FlashMDCore"),
+        .target(name: "USBBridge", linkerSettings: [.linkedFramework("IOKit"), .linkedFramework("CoreFoundation")]),
+        .target(name: "FlashMDCore", dependencies: ["USBBridge"]),
         .testTarget(name: "FlashMDCoreTests", dependencies: ["FlashMDCore"])
     ]
 )

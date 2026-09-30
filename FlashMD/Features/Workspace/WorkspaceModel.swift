@@ -62,7 +62,8 @@ struct SelectedFile: Sendable, Identifiable {
             return try .init(romCapacity:capacityChoice,saveLayout:layout)
         }
     }
-    var ports: [SerialPort] = []
+    var ports: [ProgrammerEndpoint] = []
+    var connectedProgrammer: ProgrammerKind?
     var selectedPort = "" {
         didSet {
             invalidateReview()
@@ -87,8 +88,12 @@ struct SelectedFile: Sendable, Identifiable {
         case .header: "Uses the game's declared size. May miss data."
         case .custom: "Reads the number of bytes you enter."
     } }
+    func saveFormatTitle(_ format: SaveFormat) -> String {
+        format == .raw && cartridge?.readerKind == .mdDumper ? "Padded bus format" : format.displayName
+    }
     var saveFormatExplanation: String {
-        saveFormat == .packed ? SaveImportFormat.packed.explanation : SaveImportFormat.raw.explanation
+        if saveFormat == .raw, cartridge?.readerKind == .mdDumper { return "Stores SRAM on one lane and fills the unused lane with zeros." }
+        return saveFormat == .packed ? SaveImportFormat.packed.explanation : SaveImportFormat.raw.explanation
     }
     var forcedROMSize = ""
     var selectedROM: SelectedFile? { didSet { invalidateReview() } }
@@ -127,7 +132,7 @@ struct SelectedFile: Sendable, Identifiable {
         case .custom: return Int(forcedROMSize).map { formatBytes($0) + " · custom" } ?? "Set size in Advanced Settings"
         }
     }
-    var connectionLabel: String { demoMode ? "Demo mode" : (connected ? "Programmer connected" : "No programmer connected") }
+    var connectionLabel: String { demoMode ? "Demo mode" : (connected ? "\(connectedProgrammer?.displayName ?? "Programmer") connected" : "No programmer connected") }
     private let controller = ProgrammerController()
     private let history: HistoryStore
     private var operationTask: Task<Void,Never>?
@@ -145,8 +150,8 @@ struct SelectedFile: Sendable, Identifiable {
         await scanPorts()
     }
     func scanPorts() async {
-        ports = await controller.ports()
-        if !ports.contains(where: { $0.path == selectedPort }) { selectedPort = ports.first?.path ?? "" }
+        ports = await controller.endpoints()
+        if !ports.contains(where: { $0.id == selectedPort }) { selectedPort = ports.first?.id ?? "" }
     }
     // All scan entry points share this flow, including reconnect and the menu shortcut.
     func refresh() async {
@@ -159,17 +164,17 @@ struct SelectedFile: Sendable, Identifiable {
             cartridge = try? await DemoCartridgeService().inspect()
             record(.init(title:"Demo cartridge inspected",detail:"Sample data · no device access",demo:true)); return
         }
-        scanStep = "Finding your FlashKit programmer"
+        scanStep = "Finding your USB programmer"
         await scanPorts()
-        let candidates = portOverride ? ports.filter { $0.path == selectedPort } : ports
-        guard !candidates.isEmpty else { connected = false; errorMessage = "No FlashKit USB device was found. Connect your programmer, then scan again."; return }
+        let candidates = portOverride ? ports.filter { $0.id == selectedPort } : ports
+        guard !candidates.isEmpty else { connected = false; errorMessage = "No programmer found. Connect a FlashKit or MD Dumper, then scan again."; return }
         var lastError: Error?
         for port in candidates {
             do {
                 scanStep = "Connecting to your programmer"
-                selectedPort = port.path
-                try await controller.connect(path:port.path)
-                connected = true
+                selectedPort = port.id
+                try await controller.connect(path:port.id)
+                connected = true; connectedProgrammer = port.kind
                 scanStep = "Identifying flash and reading game information"
                 let snapshot = try await controller.inspect(profile:profile,override:configurationOverride,mapper:mapper)
                 scanStep = "Analyzing ROM contents"

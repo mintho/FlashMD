@@ -54,6 +54,9 @@ public struct WritePlan: Sendable {
         guard !target.isDemo else { throw FlashMDError.invalid("Demo cartridges cannot be written.") }
         guard image != nil || save != nil else { throw FlashMDError.invalid("Choose a ROM and/or save file to write.") }
         if image != nil, !target.canWrite { throw FlashMDError.invalid("ROM writing requires a supported flash programming algorithm and known accessible capacity.") }
+        if image != nil, target.geometry?.mdDumperAlgorithm != nil, !clearUnusedROM, image?.data.count != target.romReadLimit {
+            throw FlashMDError.invalid("This reader clears the whole ROM chip. Enable Clear unused cartridge ROM to continue.")
+        }
         if save != nil, !target.canRestoreSave { throw FlashMDError.invalid("No writable SRAM layout is configured. Adjust Advanced Settings.") }
         var representation: Data?
         if let image, let geometry = target.geometry {

@@ -105,7 +105,7 @@ struct CartridgeWorkspaceView: View {
             VStack(spacing:12) {
                 Text(model.isInspecting ? "Getting to know your cartridge" : "Meet your cartridge.")
                     .font(.system(size:36,weight:.medium,design:.rounded)).multilineTextAlignment(.center)
-                Text(model.isInspecting ? model.scanStep : "Connect FlashKit via USB, insert a cartridge,\nand scan to get started.")
+                Text(model.isInspecting ? model.scanStep : "Connect FlashKit or MD Dumper via USB, insert a cartridge,\nand scan to get started.")
                     .font(.system(size:15)).foregroundStyle(.secondary).multilineTextAlignment(.center).frame(minHeight:42)
             }
             scanButton(large:true).padding(.top,10)
@@ -391,7 +391,7 @@ struct CartridgeWorkspaceView: View {
                         }
                         Text("Bytes to read, up to cartridge capacity. 2097152 = 2 MiB.").font(.caption).foregroundStyle(.secondary)
                     }
-                    Picker("SRAM export format",selection:$model.saveFormat) { Text(SaveFormat.packed.displayName).tag(SaveFormat.packed); Text(SaveFormat.raw.displayName).tag(SaveFormat.raw) }
+                    Picker("SRAM export format",selection:$model.saveFormat) { Text(model.saveFormatTitle(.packed)).tag(SaveFormat.packed); Text(model.saveFormatTitle(.raw)).tag(SaveFormat.raw) }
                     Text(model.saveFormatExplanation).font(.caption).foregroundStyle(.secondary)
                     Toggle("Verify backup",isOn:$model.verifyBackup)
                     Text("Reads twice and compares the results.").font(.caption).foregroundStyle(.secondary)
@@ -411,8 +411,8 @@ struct CartridgeWorkspaceView: View {
                 Toggle("Choose programmer manually",isOn:$model.portOverride)
                 if model.portOverride {
                     Picker("Programmer",selection:$model.selectedPort) {
-                        if model.ports.isEmpty { Text("No USB serial devices found").tag("") }
-                        ForEach(model.ports) { Text($0.name).tag($0.path) }
+                        if model.ports.isEmpty { Text("No USB programmers found").tag("") }
+                        ForEach(model.ports) { Text($0.name).tag($0.id) }
                     }
                 }
                 Text("Choose a device if more than one programmer is connected.").font(.caption).foregroundStyle(.secondary)
@@ -501,7 +501,7 @@ struct CartridgeWorkspaceView: View {
     private var footer: some View {
         HStack(spacing:18) {
             Circle().fill(model.connected || model.demoMode ? flashMint : Color.secondary.opacity(0.5)).frame(width:6,height:6)
-            Text(model.demoMode ? "Demo mode" : (model.connected ? "FlashKit connected" : (model.ports.isEmpty ? "Connect your FlashKit via USB" : "USB device available · ready to scan")))
+            Text(model.demoMode ? "Demo mode" : (model.connected ? model.connectionLabel : (model.ports.isEmpty ? "Connect your programmer via USB" : "USB device available · ready to scan")))
                 .font(.caption).foregroundStyle(.secondary)
                 .help(model.connected ? model.selectedPort : "")
             Spacer()

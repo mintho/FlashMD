@@ -3,7 +3,7 @@ import Foundation
 public protocol CartridgeService: Sendable { func inspect() async throws -> CartridgeSnapshot }
 public enum CartridgeServiceError: LocalizedError, Sendable, Equatable {
     case transportUnavailable
-    public var errorDescription: String? { "Connect a FlashKit MD programmer and choose its USB serial port." }
+    public var errorDescription: String? { "Connect a FlashKit or MD Dumper via USB." }
 }
 public actor DisconnectedCartridgeService: CartridgeService {
     public init() {}
@@ -24,11 +24,18 @@ public actor ProgrammerController {
     private var operationRunning = false
     public init() {}
     public func ports() -> [SerialPort] { SerialPort.discover() }
+    public func endpoints() -> [ProgrammerEndpoint] { ProgrammerEndpoint.discover() }
     public func connect(path: String) throws {
         guard !operationRunning else { throw FlashMDError.busy }
         device?.close(); device = nil; connectedPath = nil
-        let transport = try SerialTransport(path: path)
-        device = try FlashKitDevice(transport: transport,path:path); connectedPath = path
+        if path.hasPrefix("md-dumper:"), let location = UInt32(path.dropFirst(10)) {
+            let transport = try MDDumperUSBTransport(location:location)
+            device = try MDDumperDevice(transport:transport,location:path)
+        } else {
+            let transport = try SerialTransport(path:path)
+            device = try FlashKitDevice(transport:transport,path:path)
+        }
+        connectedPath = path
     }
     public func disconnect() throws {
         guard !operationRunning else { throw FlashMDError.busy }

@@ -51,12 +51,12 @@ final class BankedROMReader {
     private let select: (Int, UInt8) throws -> Void
     private let read: (Int, Int) throws -> Data
 
-    init(mapper: ROMMapper, size: Int, select: @escaping (Int, UInt8) throws -> Void,
+    init(mapper: ROMMapper, size: Int, register: Int? = nil, window: Int? = nil, originalPage: Int? = nil, select: @escaping (Int, UInt8) throws -> Void,
          read: @escaping (Int, Int) throws -> Data) {
         self.mapper = mapper; self.size = size; self.select = select; self.read = read
-        register = mapper == .pierSolar ? 0xA13003 : 0xA130FF
-        window = mapper == .pierSolar ? 0x280000 : 0x380000
-        originalPage = mapper == .pierSolar ? 0 : 7
+        self.register = register ?? (mapper == .pierSolar ? 0xA13003 : 0xA130FF)
+        self.window = window ?? (mapper == .pierSolar ? 0x280000 : 0x380000)
+        self.originalPage = originalPage ?? (mapper == .pierSolar ? 0 : 7)
     }
     func restore() throws { try select(register, UInt8(originalPage)) }
 

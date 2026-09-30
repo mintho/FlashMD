@@ -12,7 +12,7 @@ public enum FlashMDError: LocalizedError, Sendable, Equatable {
         switch self {
         case .invalid(let text): text
         case .disconnected: "The programmer was disconnected. Reconnect it and refresh before trying again."
-        case .busy: "The programmer is busy. Close other FlashMD or flashkit sessions using this USB device, then scan again."
+        case .busy: "The programmer is busy. Close other apps using this USB device, then scan again."
         case .timeout: "The programmer did not respond before the timeout. Check the USB connection and refresh."
         case .cancelled: "The operation was cancelled."
         case .mismatch(let offset): "Readback differs at byte 0x\(String(offset, radix: 16).uppercased()). Verification failed."

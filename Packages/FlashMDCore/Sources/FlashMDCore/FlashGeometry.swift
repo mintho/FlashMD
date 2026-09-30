@@ -12,7 +12,11 @@ public struct FlashGeometry: Codable, Sendable, Equatable {
     public let extendedID: UInt16
     public let bootID: UInt16
     public let sectors: [FlashSector]
+    public let mdDumperAlgorithm: Int?
     public var supported: Bool {
+        if let algorithm = mdDumperAlgorithm {
+            return (1...4).contains(algorithm) && sectors == [.init(offset:0,bytes:capacity)] && (0x100000...0x400000).contains(capacity)
+        }
         let top = (manufacturer == 0x20 && deviceID == 0x2256) || (manufacturer == 0x01 && bootID == 0x2201)
         let ordered = top ? Array(sectors.reversed()) : sectors
         let geometryMatches = ordered.count == (capacity == 0x400000 ? 71 : 135)
@@ -22,8 +26,14 @@ public struct FlashGeometry: Codable, Sendable, Equatable {
         (manufacturer == 0x01 && deviceID == 0x227E && extendedID == 0x2210 && [0x2200,0x2201].contains(bootID) && capacity == 0x800000))
     }
     public var name: String {
+        if mdDumperAlgorithm != nil { return String(format:"Flash %02X:%02X",manufacturer,deviceID) }
         if manufacturer == 0x01 && supported { return "AMD/Spansion S29GL064N" }
         return supported ? (deviceID == 0x2256 ? "ST M29W320ET" : "ST M29W320EB") : String(format: "Flash %04X:%04X", manufacturer, deviceID)
+    }
+    init(mdDumperCapacity: Int, manufacturer: UInt16, deviceID: UInt16, algorithm: Int) {
+        capacity = mdDumperCapacity; self.manufacturer = manufacturer; self.deviceID = deviceID
+        commandSet = 0; extendedID = 0; bootID = 0; mdDumperAlgorithm = algorithm
+        sectors = [.init(offset:0,bytes:mdDumperCapacity)]
     }
     public init(cfi: Data, manufacturer: UInt16, deviceID: UInt16, extendedID: UInt16 = 0, bootID: UInt16 = 0) throws {
         guard cfi.count >= 0x80, Data(cfi[0x10..<0x13]) == Data("QRY".utf8) else { throw FlashMDError.invalid("Flash did not return valid CFI geometry. ROM backup may still be possible.") }
@@ -44,6 +54,7 @@ public struct FlashGeometry: Codable, Sendable, Equatable {
            (manufacturer == 0x20 && deviceID == 0x2256 && regions.first?.1 == 8192) { regions.reverse() }
         offset = 0
         for (blocks,size) in regions { for _ in 0..<blocks { sectors.append(.init(offset:offset,bytes:size)); offset += size } }
+        self.mdDumperAlgorithm = nil
         self.capacity = capacity; self.commandSet = le(0x13); self.manufacturer = manufacturer; self.deviceID = deviceID
         self.extendedID = extendedID; self.bootID = bootID
         self.sectors = sectors

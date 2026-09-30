@@ -64,18 +64,23 @@ public struct CartridgeSnapshot: Sendable, Equatable {
     public let romAccess: ROMAccess
     public let mappedROMBytes: Int?
     public let mapperMessage: String?
+    public let readerKind: ProgrammerKind
+    public let saveWriteSupported: Bool
     public var canBackupROM: Bool { romAccess != .unavailable }
     public var canWrite: Bool { mapper == .linear && romAccess == .linear && !isDemo && geometry?.supported == true && flashCapacity != nil }
     public var romReadLimit: Int { mappedROMBytes ?? flashCapacity?.bytes ?? min(0x400000,saveLayout?.base ?? 0x400000) }
-    public var canRestoreSave: Bool { mapper == .linear && romAccess == .linear && !isDemo && saveLayout != nil && saveLayout?.lane != 0 }
+    public var canRestoreSave: Bool { mapper == .linear && romAccess == .linear && !isDemo && saveLayout != nil && saveLayout?.lane != 0 && saveWriteSupported }
 
     public func applying(_ override: CartridgeConfiguration?) -> CartridgeSnapshot {
         guard let override, mapper == .linear, romAccess == .linear else { return self }
+        let layout = readerKind == .mdDumper && override.saveLayout?.lane != 1 ? nil : override.saveLayout
+        let configurationWarning = readerKind == .mdDumper && override.saveLayout != nil && layout == nil
+            ? "This reader supports odd-lane SRAM only. Choose odd lane in Advanced Settings." : warning
         let capacity = MemoryMeasurement(bytes:min(override.romCapacity,geometry?.capacity ?? 0x400000),source:.profile)
         return .init(title:title,regions:regions,romSize:romSize,flashCapacity:capacity,
-            rawSaveWindow:override.saveLayout.map { .init(bytes:$0.windowBytes,source:.profile) },isDemo:isDemo,
-            metadata:metadata,geometry:geometry,saveLayout:override.saveLayout,identity:identity,fingerprint:fingerprint,
-            warning:warning,profile:profile,rawHeader:rawHeader,configurationOverride:override,mapper:mapper,mapperSelection:mapperSelection,romAccess:romAccess,mappedROMBytes:mappedROMBytes,mapperMessage:mapperMessage)
+            rawSaveWindow:layout.map { .init(bytes:$0.windowBytes,source:.profile) },isDemo:isDemo,
+            metadata:metadata,geometry:geometry,saveLayout:layout,identity:identity,fingerprint:fingerprint,
+            warning:configurationWarning,profile:profile,rawHeader:rawHeader,configurationOverride:override,mapper:mapper,mapperSelection:mapperSelection,romAccess:romAccess,mappedROMBytes:mappedROMBytes,mapperMessage:mapperMessage,readerKind:readerKind,saveWriteSupported:readerKind == .mdDumper ? layout?.activeBytes.isMultiple(of:32) == true : saveWriteSupported)
     }
 
     public init(
@@ -98,8 +103,11 @@ public struct CartridgeSnapshot: Sendable, Equatable {
         mapperSelection: ROMMapper = .automatic,
         romAccess: ROMAccess = .linear,
         mappedROMBytes: Int? = nil,
-        mapperMessage: String? = nil
+        mapperMessage: String? = nil,
+        readerKind: ProgrammerKind = .flashKit,
+        saveWriteSupported: Bool = true
     ) {
+        self.readerKind = readerKind; self.saveWriteSupported = saveWriteSupported
         self.mapper = mapper; self.mapperSelection = mapperSelection; self.romAccess = romAccess
         self.mappedROMBytes = mappedROMBytes; self.mapperMessage = mapperMessage
         self.configurationOverride = configurationOverride
