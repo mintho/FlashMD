@@ -71,7 +71,7 @@ public final class FlashKitDevice: CartridgeDevice, @unchecked Sendable {
         if mappedCartridge { try bankedReader?.restore(); return }
         try word(0xF0, at: 0); try word(0, at: 0xA13000); try transport.write(Data([5,1]), timeout: 2) }
     public func readROM(offset: Int, count: Int) throws -> Data {
-        guard !mapperUnavailable else { throw FlashMDError.invalid("Complete ROM unavailable. This reader could not switch banks.") }
+        guard !mapperUnavailable else { throw FlashMDError.invalid("This cartridge’s bank switching is not supported by this reader. ROM backup is unavailable.") }
         if let bankedReader { return try bankedReader.readROM(offset:offset,count:count) }
         try word(0, at: 0xA13000)
         return try readBytes(offset: offset, count: count)
@@ -113,7 +113,7 @@ public final class FlashKitDevice: CartridgeDevice, @unchecked Sendable {
             if qualified { message = "\(mapper.displayName) · bank switching verified. SRAM access and writing are unavailable." }
             else if mapper == .linear { message = "Complete ROM unavailable. Select a known ROM mapper in Advanced Settings." }
             else if size == nil { message = "Complete ROM unavailable. This mapper revision has no known ROM size." }
-            else { message = "Complete ROM unavailable. This reader could not verify bank switching." }
+            else { message = "This cartridge’s bank switching is not supported by this reader. ROM backup is unavailable." }
             return .init(title:metadata?.title ?? "Unknown cartridge",regions:metadata?.regions ?? [],
                 romSize:metadata?.declaredROMBytes.map { .init(bytes:$0,source:.header) },
                 flashCapacity:nil,rawSaveWindow:nil,metadata:metadata,identity:identity,

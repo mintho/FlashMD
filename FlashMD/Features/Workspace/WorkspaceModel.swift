@@ -116,7 +116,7 @@ struct SelectedFile: Sendable, Identifiable {
         return (!writeROM || (cartridge.canWrite && selectedROM != nil)) && (!writeSRAM || (cartridge.canRestoreSave && selectedSRAM != nil))
     }
     var backupSizeDescription: String {
-        if let cartridge, !cartridge.canBackupROM { return "Complete ROM unavailable" }
+        if let cartridge, !cartridge.canBackupROM { return "ROM backup unavailable" }
         if let cartridge, cartridge.mapper != .linear { return formatBytes(cartridge.romReadLimit) + " · complete banked ROM" }
         switch backupLength {
         case .complete: return cartridge.map { formatBytes($0.romReadLimit) + " · complete ROM range" } ?? "Size not yet known"
