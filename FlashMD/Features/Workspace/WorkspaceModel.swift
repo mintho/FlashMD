@@ -80,6 +80,10 @@ struct SelectedFile: Sendable, Identifiable {
     var showReview = false
     var showClearHistory = false
     var progress: OperationProgress?
+    var operationTitle = ""
+    var operationCartridge: CartridgeSnapshot?
+    var operationResult: OperationResult?
+    var operationEnd: Date?
     var operationStart: Date?
     var operationRunning = false
     var loadingFile = false
@@ -121,7 +125,7 @@ struct SelectedFile: Sendable, Identifiable {
     // All scan entry points share this flow, including reconnect and the menu shortcut.
     func refresh() async {
         guard !isBusy else { return }
-        isInspecting = true; errorMessage = nil; progress = nil; cartridge = nil; invalidateReview()
+        isInspecting = true; errorMessage = nil; clearOperationPresentation(); cartridge = nil; invalidateReview()
         defer { isInspecting = false }
         if demoMode {
             scanStep = "Reading sample cartridge"
@@ -180,7 +184,7 @@ struct SelectedFile: Sendable, Identifiable {
                 defer { loadingFile = false }
                 do {
                     let file = try await Task.detached(priority:.userInitiated) { try SelectedFile(url:url,rom:forROM) }.value
-                    if forROM { selectedROM = file; direction = .write } else { selectedSRAM = file }
+                    if forROM { selectedROM = file; writeROM = true; direction = .write } else { selectedSRAM = file; writeSRAM = true }
                     record(.init(title:forROM ? "ROM inspected" : "Save selected",detail:file.name))
                 } catch { errorMessage = error.localizedDescription }
             }
@@ -232,6 +236,7 @@ struct SelectedFile: Sendable, Identifiable {
     private func beginOperation(title: String, work: @escaping @Sendable (ProgrammerController,@escaping ProgressHandler) async throws -> OperationResult) {
         invalidateReview()
         let eventID = UUID(), eventDate = Date()
+        operationTitle = title; operationCartridge = cartridge; operationResult = nil; operationEnd = nil
         operationRunning = true; operationStart = eventDate; completionMessage = nil; errorMessage = nil
         progress = .init(.inspecting,detail:"Checking target cartridge")
         IOPMAssertionCreateWithName(kIOPMAssertionTypePreventUserIdleSystemSleep as CFString,IOPMAssertionLevel(kIOPMAssertionLevelOn),"FlashMD cartridge transfer" as CFString,&sleepAssertion)
@@ -240,7 +245,7 @@ struct SelectedFile: Sendable, Identifiable {
         progressID = identifier
         operationTask = Task {
             defer {
-                progressID = nil; operationRunning = false; operationTask = nil
+                progressID = nil; operationEnd = Date(); operationRunning = false; operationTask = nil
                 if sleepAssertion != 0 { IOPMAssertionRelease(sleepAssertion); sleepAssertion = 0 }
             }
             do {
@@ -251,6 +256,7 @@ struct SelectedFile: Sendable, Identifiable {
                     }
                 }
                 progressID = nil
+                operationResult = result
                 record(.init(title:title,detail:result.manifest.phases.joined(separator:" · "),outcome:result.manifest.outcome,result:result,id:eventID,date:eventDate))
                 completionMessage = title == "Cartridge backup" ? (verifyBackup ? "Backup completed and compared with a second read." : "Backup completed. A second-read verification was not requested.") : "Write completed. All written contents passed readback verification."
                 progress = .init(.completed,detail:completionMessage ?? "Completed")
@@ -259,11 +265,29 @@ struct SelectedFile: Sendable, Identifiable {
                 let failure = error as? OperationFailure
                 record(.init(title:title,detail:error.localizedDescription,outcome:failure?.result.manifest.outcome ?? "failed",result:failure?.result,id:eventID,date:eventDate))
                 progressID = nil
-                errorMessage = error.localizedDescription
+                operationResult = failure?.result
                 let cancelled = error is CancellationError || failure?.result.manifest.outcome == "cancelled"
                 progress = .init(cancelled ? .cancelled : .failed,detail:error.localizedDescription)
                 connected = false; cartridge = nil
             }
+        }
+    }
+    func clearOperationPresentation() {
+        guard !operationRunning else { return }
+        progress = nil; completionMessage = nil; operationResult = nil; operationCartridge = nil
+        operationStart = nil; operationEnd = nil; operationTitle = ""
+    }
+    func newTransfer() {
+        guard !isBusy else { return }
+        clearOperationPresentation()
+        if !connected || cartridge == nil { Task { await refresh() } }
+    }
+    func revealOperationFolder() {
+        if let folder = operationResult?.folder { NSWorkspace.shared.activateFileViewerSelecting([folder]) }
+    }
+    func revealArtifact(_ artifact: BackupArtifact) {
+        if let folder = operationResult?.folder {
+            NSWorkspace.shared.activateFileViewerSelecting([folder.appendingPathComponent(artifact.filename)])
         }
     }
     func cancel() { operationTask?.cancel(); progress = .init(progress?.phase ?? .cancelled,detail:"Stopping at the next safe boundary…",cancellable:false) }

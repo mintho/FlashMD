@@ -27,11 +27,13 @@ struct CartridgeWorkspaceView: View {
                 GeometryReader { viewport in
                 ScrollViewReader { scroll in
                 ScrollView {
-                    VStack(spacing:26) {
-                        if let cartridge = model.cartridge, !model.isInspecting {
-                            cartridgeSummary(cartridge)
-                            transferPanel
-                            if model.progress != nil { progressPanel.id("transferProgress") }
+                    VStack(spacing:20) {
+                        if let cartridge = model.cartridge ?? model.operationCartridge, !model.isInspecting {
+                            cartridgeSummary(cartridge,compact:viewport.size.height < 720)
+                            Group {
+                                if model.progress != nil { progressPanel }
+                                else { transferPanel }
+                            }.id("transferPanel")
                         } else { scanWelcome }
                         if advanced {
                             advancedPanel
@@ -55,11 +57,14 @@ struct CartridgeWorkspaceView: View {
                                 }
                                 .transition(.opacity)
                         }
-                    }.overlay(alignment:.top) { Color.clear.frame(height:1).id("workspaceTop") }.padding(.horizontal,36).padding(.top,16).padding(.bottom,24)
+                    }.overlay(alignment:.top) { Color.clear.frame(height:1).id("workspaceTop") }.padding(.horizontal,36).padding(.top,12).padding(.bottom,24)
                         .frame(maxWidth:880).frame(maxWidth:.infinity)
                 }
                 .onChange(of:model.operationRunning) { _,running in
-                    if running { withAnimation(reduceMotion ? nil : .easeInOut(duration:0.25)) { scroll.scrollTo("transferProgress",anchor:.bottom) } }
+                    if running {
+                        advanced = false; pendingAdvancedScroll = false
+                        scroll.scrollTo("workspaceTop",anchor:.top)
+                    }
                 }
                 .onChange(of:model.isInspecting) { _,scanning in
                     if scanning { scroll.scrollTo("workspaceTop",anchor:.top) }
@@ -122,13 +127,13 @@ struct CartridgeWorkspaceView: View {
             .accessibilityIdentifier("scanCartridge")
     }
 
-    private func cartridgeSummary(_ cartridge:CartridgeSnapshot) -> some View {
-        VStack(spacing:22) {
+    private func cartridgeSummary(_ cartridge:CartridgeSnapshot,compact:Bool) -> some View {
+        VStack(spacing:compact ? 12 : 22) {
             HStack(spacing:24) {
-                CartridgeArtwork(scanning:false).frame(width:125,height:135)
+                CartridgeArtwork(scanning:false).frame(width:compact ? 85 : 125,height:compact ? 92 : 135)
                 VStack(alignment:.leading,spacing:8) {
                     Text("MEGA DRIVE / GENESIS").font(.system(size:10,weight:.bold)).tracking(2).foregroundStyle(flashViolet)
-                    Text(cartridge.title).font(.system(size:28,weight:.semibold,design:.rounded)).fixedSize(horizontal:false,vertical:true)
+                    Text(cartridge.title).font(.system(size:compact ? 24 : 28,weight:.semibold,design:.rounded)).fixedSize(horizontal:false,vertical:true)
                     HStack(spacing:8) {
                         Text(cartridge.regions.isEmpty ? "No game region detected" : cartridge.regions.joined(separator:" · ")).foregroundStyle(.secondary)
                         if cartridge.metadata != nil {
@@ -148,7 +153,7 @@ struct CartridgeWorkspaceView: View {
                 metric("INSTALLED GAME",cartridge.romSize.map { formatBytes($0.bytes) } ?? "No valid header",note:"From the game header")
                 Rectangle().fill(Color.primary.opacity(0.1)).frame(width:1,height:42)
                 metric("SAVE MEMORY",cartridge.saveLayout.map { formatBytes($0.activeBytes) + " SRAM" } ?? "None declared",note:cartridge.saveLayout == nil ? "Override in Advanced Options" : (cartridge.configurationOverride == nil && cartridge.profile == .automatic ? "From the game header" : "Manual configuration"))
-            }.padding(.vertical,18).background(Color.primary.opacity(scheme == .dark ? 0.035 : 0.025),in:RoundedRectangle(cornerRadius:18))
+            }.padding(.vertical,compact ? 12 : 18).background(Color.primary.opacity(scheme == .dark ? 0.035 : 0.025),in:RoundedRectangle(cornerRadius:18))
         }.padding(.top,4)
     }
     private func metric(_ label:String,_ value:String,note:String) -> some View {
@@ -160,7 +165,7 @@ struct CartridgeWorkspaceView: View {
     }
 
     private var transferPanel: some View {
-        VStack(alignment:.leading,spacing:22) {
+        VStack(alignment:.leading,spacing:16) {
             HStack {
                 HStack(spacing:4) {
                     directionButton(.backup)
@@ -174,7 +179,7 @@ struct CartridgeWorkspaceView: View {
             if model.configurationPending {
                 Text("Configuration changed. Apply it in Advanced Options before transferring.").font(.callout).foregroundStyle(.orange)
             }
-        }.padding(26).background(panelBackground)
+        }.padding(22).background(panelBackground)
     }
     private func directionButton(_ direction:TransferDirection) -> some View {
         Button { model.direction = direction } label: {
@@ -205,39 +210,21 @@ struct CartridgeWorkspaceView: View {
     }
 
     private var writePanel: some View {
-        VStack(alignment:.leading,spacing:18) {
-            VStack(alignment:.leading,spacing:5) {
-                Text("A new game. Or a familiar save.").font(.system(size:19,weight:.medium,design:.rounded))
-                Text("Choose your files, then review exactly what will change.").font(.callout).foregroundStyle(.secondary)
-            }
+        VStack(alignment:.leading,spacing:14) {
+            Text("Choose your files, then review what will change.").font(.callout).foregroundStyle(.secondary)
             HStack(spacing:12) {
-                selectionCard("Game ROM",subtitle:"Replace the installed game",symbol:"gamecontroller",selected:$model.writeROM,enabled:model.cartridge?.canWrite == true)
-                selectionCard("Save data",subtitle:"Restore a saved game",symbol:"externaldrive",selected:$model.writeSRAM,enabled:model.cartridge?.canRestoreSave == true)
+                writeFileCard("Game ROM",file:model.selectedROM,selected:$model.writeROM,enabled:model.cartridge?.canWrite == true,forROM:true)
+                writeFileCard("Save data",file:model.selectedSRAM,selected:$model.writeSRAM,enabled:model.cartridge?.canRestoreSave == true,forROM:false)
             }
-            if model.writeROM {
-                FileSelectionView(file:model.selectedROM,title:"Choose a game ROM",buttonTitle:"Choose ROM…") { model.isImportingROM = true }
-                    .dropDestination(for:URL.self) { urls,_ in guard let url = urls.first else { return false }; model.selectFile(.success(url),forROM:true); return true }
-                if let image = model.selectedROM?.image {
-                    HStack {
-                        Text(image.metadata.title).font(.callout.weight(.medium)).lineLimit(1)
-                        Spacer()
-                        Button("File Details") { fileDetails = true }.buttonStyle(.plain).foregroundStyle(flashViolet)
-                            .popover(isPresented:$fileDetails) { MetadataView(metadata:image.metadata,checksum:image.checksum).padding(24).frame(width:480) }
-                    }
-                    if let geometry = model.cartridge?.geometry, let bytes = try? geometry.programLength(image.data.count) {
-                        let capacity = model.cartridge?.flashCapacity?.bytes ?? 0
-                        Text("\(formatBytes(bytes)) required including padding · \(formatBytes(capacity)) available")
-                            .font(.caption).foregroundStyle(bytes <= capacity ? Color.secondary : Color.red)
-                    }
-                    if image.metadata.saveLayout != nil, model.cartridge?.saveLayout == nil {
-                        Text("This game expects save memory, but no SRAM is configured.").font(.caption).foregroundStyle(.orange)
-                    }
-                    ForEach(image.warnings,id:\.self) { Text($0).font(.caption).foregroundStyle(.secondary) }
+            if model.writeROM, let image = model.selectedROM?.image {
+                if let geometry = model.cartridge?.geometry, let bytes = try? geometry.programLength(image.data.count) {
+                    let capacity = model.cartridge?.flashCapacity?.bytes ?? 0
+                    Text("\(formatBytes(bytes)) required including padding · \(formatBytes(capacity)) available")
+                        .font(.caption).foregroundStyle(bytes <= capacity ? Color.secondary : Color.red)
                 }
-            }
-            if model.writeSRAM {
-                FileSelectionView(file:model.selectedSRAM,title:"Choose a save file",buttonTitle:"Choose Save…") { model.isImportingSRAM = true }
-                    .dropDestination(for:URL.self) { urls,_ in guard let url = urls.first else { return false }; model.selectFile(.success(url),forROM:false); return true }
+                if image.metadata.saveLayout != nil, model.cartridge?.saveLayout == nil {
+                    Text("This game expects save memory, but no SRAM is configured.").font(.caption).foregroundStyle(.orange)
+                }
             }
             HStack {
                 Text(model.backupBeforeWrite ? "A verified backup is made before writing." : "Pre-write backup is off.").font(.caption).foregroundStyle(.secondary)
@@ -245,9 +232,47 @@ struct CartridgeWorkspaceView: View {
                 Button("Review Write…") { model.prepareWrite() }.buttonStyle(FlashActionStyle()).disabled(!model.canReviewWrite)
             }
             if model.cartridge?.canWrite != true {
-                Text("This flash chip has no supported ROM programming algorithm. You can still back up readable contents.").font(.caption).foregroundStyle(.secondary)
+                Text("This flash chip has no supported ROM programming algorithm. Readable contents can still be backed up.").font(.caption).foregroundStyle(.secondary)
             }
         }.disabled(model.isBusy)
+    }
+
+    private func writeFileCard(_ title:String,file:SelectedFile?,selected:Binding<Bool>,enabled:Bool,forROM:Bool) -> some View {
+        VStack(alignment:.leading,spacing:10) {
+            Button { selected.wrappedValue.toggle() } label: {
+                HStack {
+                    Text(title).font(.callout.weight(.semibold))
+                    Spacer()
+                    Image(systemName:selected.wrappedValue ? "checkmark.circle.fill" : "circle").foregroundStyle(selected.wrappedValue ? flashViolet : .secondary)
+                }.contentShape(Rectangle())
+            }.buttonStyle(.plain).accessibilityLabel("Write " + title).accessibilityValue(selected.wrappedValue ? "Selected" : "Not selected")
+            VStack(alignment:.leading,spacing:4) {
+                Text(file?.name ?? (enabled ? "Drop a file or choose one" : "Unavailable for this cartridge")).font(.caption).lineLimit(1).truncationMode(.middle)
+                if let file { Text(formatBytes(file.bytes)).font(.caption2).foregroundStyle(.secondary) }
+            }.frame(height:30,alignment:.top).foregroundStyle(.secondary)
+            HStack {
+                Button(forROM ? "Choose ROM…" : "Choose Save…") {
+                    if forROM { model.isImportingROM = true } else { model.isImportingSRAM = true }
+                }.controlSize(.small).disabled(!selected.wrappedValue)
+                Spacer(minLength:0)
+                if let image = file?.image {
+                    Button("Details") { fileDetails = true }.buttonStyle(.plain).foregroundStyle(flashViolet)
+                        .popover(isPresented:$fileDetails) {
+                            VStack(alignment:.leading,spacing:14) {
+                                MetadataView(metadata:image.metadata,checksum:image.checksum)
+                                ForEach(image.warnings,id:\.self) { Text($0).font(.caption).foregroundStyle(.secondary) }
+                            }.padding(24).frame(width:480)
+                        }
+                }
+            }.font(.caption)
+        }.padding(14).frame(maxWidth:.infinity,alignment:.leading)
+            .background(selected.wrappedValue && enabled ? flashViolet.opacity(0.09) : Color.primary.opacity(0.025),in:RoundedRectangle(cornerRadius:14))
+            .overlay(RoundedRectangle(cornerRadius:14).strokeBorder(selected.wrappedValue && enabled ? flashViolet.opacity(0.5) : Color.primary.opacity(contrast == .increased ? 0.35 : 0.08),lineWidth:1))
+            .disabled(!enabled).opacity(enabled ? 1 : 0.5)
+            .dropDestination(for:URL.self) { urls,_ in
+                guard enabled, !model.isBusy, let url = urls.first else { return false }
+                model.selectFile(.success(url),forROM:forROM); return true
+            }
     }
 
     private func selectionCard(_ title:String,subtitle:String,symbol:String,selected:Binding<Bool>,enabled:Bool) -> some View {
@@ -330,23 +355,83 @@ struct CartridgeWorkspaceView: View {
     }
 
     private var progressPanel: some View {
-        VStack(alignment:.leading,spacing:12) {
+        VStack(alignment:.leading,spacing:18) {
             if let progress = model.progress {
-                HStack {
-                    if progress.phase == .completed { Image(systemName:"checkmark.circle.fill").foregroundStyle(flashMint) }
-                    Text(progress.detail.isEmpty ? progress.phase.rawValue : progress.detail).font(.callout.weight(.medium)).fixedSize(horizontal:false,vertical:true)
-                    Spacer()
-                    if model.operationRunning { Button(progress.cancellable ? "Cancel" : "Stop Safely") { model.cancel() } }
+                HStack(spacing:12) {
+                    if model.operationRunning {
+                        ProgressView().controlSize(.small).tint(flashViolet)
+                    } else {
+                        Image(systemName:progress.phase == .completed ? "checkmark.circle.fill" : (progress.phase == .cancelled ? "stop.circle" : "exclamationmark.triangle.fill"))
+                            .font(.system(size:28,weight:.light)).foregroundStyle(progress.phase == .completed ? flashMint : .orange)
+                    }
+                    VStack(alignment:.leading,spacing:5) {
+                        Text(operationHeading(progress)).font(.system(size:21,weight:.medium,design:.rounded))
+                        Text(model.operationRunning ? "Keep the programmer connected." : (progress.phase == .completed ? progress.detail : "Details and completed files are retained in Activity."))
+                            .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal:false,vertical:true)
+                    }
+                    Spacer(minLength:0)
+                    if let start = model.operationStart {
+                        if model.operationRunning {
+                            TimelineView(.periodic(from:start,by:1)) { context in elapsedLabel(context.date.timeIntervalSince(start)) }
+                        } else { elapsedLabel((model.operationEnd ?? Date()).timeIntervalSince(start)) }
+                    }
                 }
-                if progress.total > 0 {
-                    ProgressView(value:Double(progress.completed),total:Double(progress.total))
-                    Text(progress.phase == .erasing ? "\(progress.completed) / \(progress.total) sectors" : "\(formatBytes(progress.completed)) / \(formatBytes(progress.total))").font(.caption).foregroundStyle(.secondary).monospacedDigit()
-                }
-                if let start = model.operationStart, model.operationRunning {
-                    TimelineView(.periodic(from:start,by:1)) { context in Text("Elapsed \(Int(context.date.timeIntervalSince(start))) seconds").font(.caption).foregroundStyle(.secondary).monospacedDigit() }
+                if model.operationRunning {
+                    VStack(alignment:.leading,spacing:12) {
+                        Text(progress.detail.isEmpty ? "Checking the cartridge" : progress.detail).font(.callout.weight(.medium))
+                        if progress.total > 0 {
+                            ProgressView(value:Double(progress.completed),total:Double(progress.total))
+                            Text(progress.phase == .erasing ? "\(progress.completed) / \(progress.total) sectors" : "\(formatBytes(progress.completed)) / \(formatBytes(progress.total))")
+                                .font(.caption).foregroundStyle(.secondary).monospacedDigit()
+                        } else { ProgressView().progressViewStyle(.linear) }
+                    }.padding(.vertical,16)
+                    HStack {
+                        Text("\(model.operationCartridge?.title ?? "Cartridge") · \(model.operationTitle == "Cartridge backup" ? "Backup" : "Write and verify")").font(.caption).foregroundStyle(.secondary)
+                        Spacer()
+                        Button(progress.cancellable ? "Cancel Transfer" : "Stop Safely") { model.cancel() }
+                    }
+                } else {
+                    if progress.phase != .completed {
+                        Text(progress.detail).font(.callout).fixedSize(horizontal:false,vertical:true)
+                    }
+                    if let result = model.operationResult, !result.manifest.artifacts.isEmpty {
+                        VStack(spacing:10) {
+                            ForEach(result.manifest.artifacts,id:\.filename) { artifact in
+                                HStack {
+                                    Image(systemName:artifact.filename == "game.bin" ? "gamecontroller" : "externaldrive").foregroundStyle(flashViolet)
+                                    Text(artifact.filename == "game.bin" ? "Game ROM · \(artifact.filename)" : "Save data · \(artifact.filename)").font(.callout.weight(.medium))
+                                    Spacer()
+                                    Text(formatBytes(artifact.bytes)).font(.caption).foregroundStyle(.secondary)
+                                    if artifact.verified { Image(systemName:"checkmark.seal").foregroundStyle(flashMint).help("Verified with a second read") }
+                                    Button { model.revealArtifact(artifact) } label: { Image(systemName:"arrow.up.forward.square") }
+                                        .buttonStyle(.plain).help("Show \(artifact.filename) in Finder").accessibilityLabel("Show \(artifact.filename) in Finder")
+                                }
+                            }
+                        }.padding(16).background(Color.primary.opacity(0.035),in:RoundedRectangle(cornerRadius:12))
+                    } else if progress.phase == .completed {
+                        Text("\(model.operationResult?.manifest.phases.joined(separator:" · ") ?? "Readback verification completed")").font(.callout).foregroundStyle(.secondary)
+                    }
+                    HStack {
+                        if model.operationResult?.folder != nil { Button("Show in Finder") { model.revealOperationFolder() } }
+                        if progress.phase != .completed { Button("View Details") { model.showHistory = true } }
+                        Spacer()
+                        Button(model.connected && model.cartridge != nil ? "New Transfer" : "Scan Again") { model.newTransfer() }.buttonStyle(FlashActionStyle())
+                    }
                 }
             }
-        }.padding(22).background(panelBackground).accessibilityElement(children:.contain)
+        }.padding(26).frame(maxWidth:.infinity,minHeight:300,alignment:.topLeading)
+            .background(panelBackground)
+    }
+    private func elapsedLabel(_ seconds:TimeInterval) -> some View {
+        Text("\(Int(max(0,seconds)))s").font(.caption).foregroundStyle(.secondary).monospacedDigit()
+    }
+    private func operationHeading(_ progress:OperationProgress) -> String {
+        if model.operationRunning { return model.operationTitle == "Cartridge backup" ? "Backing up your cartridge" : "Writing your cartridge" }
+        switch progress.phase {
+        case .completed: return model.operationTitle == "Cartridge backup" ? "Backup complete" : "Write verified"
+        case .cancelled: return "Transfer cancelled"
+        default: return "Transfer could not finish"
+        }
     }
 
     private var footer: some View {
@@ -401,25 +486,6 @@ struct MetadataView: View {
         }
     }
     private func row(_ title:String,_ value:String) -> some View { GridRow { Text(title).foregroundStyle(.secondary); Text(value.isEmpty ? "Unknown" : value).fixedSize(horizontal:false,vertical:true).frame(maxWidth:.infinity,alignment:.leading) } }
-}
-
-private struct FileSelectionView: View {
-    let file: SelectedFile?
-    let title: String
-    let buttonTitle: String
-    let action: () -> Void
-    var body: some View {
-        HStack(spacing:12) {
-            Image(systemName:"doc").font(.title2).foregroundStyle(flashViolet)
-            VStack(alignment:.leading,spacing:4) {
-                Text(file?.name ?? title).fontWeight(.medium).lineLimit(1).truncationMode(.middle)
-                Text(file.map { formatBytes($0.bytes) } ?? "Drop a file here or choose one").font(.caption).foregroundStyle(.secondary)
-            }
-            Spacer()
-            Button(buttonTitle,action:action)
-        }.padding(16).background(Color.primary.opacity(0.025),in:RoundedRectangle(cornerRadius:12))
-            .overlay(RoundedRectangle(cornerRadius:12).strokeBorder(Color.primary.opacity(0.1),style:StrokeStyle(lineWidth:1,dash:[5,4])))
-    }
 }
 
 /// Original vector artwork scales cleanly with the window and needs no bitmap assets.
