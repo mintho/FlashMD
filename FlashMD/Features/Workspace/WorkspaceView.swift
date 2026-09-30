@@ -41,9 +41,13 @@ struct WriteReviewView: View {
                     LabeledContent("ROM",value:plan.romName ?? "Game ROM")
                     LabeledContent("Programmed size (including padding)",value:formatBytes(plan.requiredBytes))
                     Text("The current ROM will be replaced.")
+                    if let original = plan.originalROMLength, let geometry = plan.target.geometry,
+                       let aligned = try? geometry.programLength(original), plan.requiredBytes > aligned {
+                        Text("Remaining ROM space will be cleared to FF.").foregroundStyle(.secondary)
+                    }
                 }
                 if plan.save != nil { LabeledContent("SRAM",value:plan.saveName ?? "Save data"); Text("Existing save data will be replaced.") }
-                else if plan.target.saveLayout != nil { Text("Existing SRAM bytes will be retained. They may not be compatible with a different game.").foregroundStyle(.secondary) }
+                else if plan.target.saveLayout != nil { Text("Existing SRAM will be retained and checked after writing. Saves may not be compatible with a different game.").foregroundStyle(.secondary) }
                 Text(plan.backupDestination == nil ? "Pre-write backup is off." : "A verified backup of affected contents will be saved before writing.")
                 Text("Keep USB connected until verification finishes.").font(.callout)
             }

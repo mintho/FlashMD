@@ -31,6 +31,7 @@ final class MemoryDevice: CartridgeDevice, @unchecked Sendable {
     var changedIdentity = false
     var failSaveRead = false
     var failErase = false
+    var changeSaveOnErase = false
     var failRestore = false
     var corruptProgram = false
     var shortRead = false
@@ -54,7 +55,7 @@ final class MemoryDevice: CartridgeDevice, @unchecked Sendable {
         if mismatchSecondRead, reads.count > 2, !block.isEmpty { block[0] ^= 1 }
         return block }
     func readSRAM(layout:SRAMLayout,offset:Int,count:Int) throws -> Data { if failSaveRead { throw FlashMDError.disconnected }; return Data(sram[(layout.base-0x200000+offset)..<(layout.base-0x200000+offset+count)]) }
-    func erase(sector:FlashSector) throws { if failErase { throw FlashMDError.timeout }; erasures += 1; rom.replaceSubrange(sector.offset..<sector.offset+sector.bytes,with:Data(repeating:0xFF,count:sector.bytes)) }
+    func erase(sector:FlashSector) throws { if failErase { throw FlashMDError.timeout }; erasures += 1; rom.replaceSubrange(sector.offset..<sector.offset+sector.bytes,with:Data(repeating:0xFF,count:sector.bytes)); if changeSaveOnErase { sram[1] = 0x5A } }
     func program(offset:Int,data:Data) throws { if failProgram { throw FlashMDError.disconnected }; programs += 1; rom.replaceSubrange(offset..<offset+data.count,with:data); if corruptProgram { rom[offset] ^= 1 } }
     func restore(layout:SRAMLayout,raw:Data) throws {
         if failRestore { throw FlashMDError.disconnected }; restores += 1

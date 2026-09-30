@@ -5,9 +5,9 @@ import AppKit
 import IOKit.pwr_mgt
 
 enum ROMBackupLength: String, CaseIterable, Identifiable {
-    case automatic, header, custom
+    case automatic, suggested, header, custom
     var id: Self { self }
-    var title: String { switch self { case .automatic: "Automatic · complete ROM range"; case .header: "Header size only"; case .custom: "Custom byte count" } }
+    var title: String { switch self { case .automatic: "Complete ROM range (default)"; case .suggested: "Content analysis suggestion"; case .header: "Header size only"; case .custom: "Custom byte count" } }
 }
 struct SelectedFile: Sendable, Identifiable {
     let id = UUID()
@@ -55,16 +55,18 @@ struct SelectedFile: Sendable, Identifiable {
     var selectedPort = "" {
         didSet {
             invalidateReview()
-            if oldValue != selectedPort, connected { connected = false; cartridge = nil }
+            if oldValue != selectedPort, connected { connected = false; cartridge = nil; contentAnalysis = nil }
         }
     }
     var connected = false
     var cartridge: CartridgeSnapshot?
+    var contentAnalysis: ROMContentAnalysis?
     var isInspecting = false
     var backupROM = true
     var backupSRAM = true
     var writeROM = true { didSet { invalidateReview() } }
     var writeSRAM = false { didSet { invalidateReview() } }
+    var clearUnusedROM = false { didSet { invalidateReview() } }
     var backupBeforeWrite = true { didSet { UserDefaults.standard.set(backupBeforeWrite,forKey:"backupBeforeWrite"); invalidateReview() } }
     var verifyBackup = true { didSet { UserDefaults.standard.set(verifyBackup,forKey:"verifyBackup") } }
     var saveFormat: SaveFormat = .raw { didSet { invalidateReview() } }
@@ -96,6 +98,7 @@ struct SelectedFile: Sendable, Identifiable {
     var backupSizeDescription: String {
         switch backupLength {
         case .automatic: return cartridge.map { formatBytes($0.romReadLimit) + " · complete ROM range" } ?? "Size not yet known"
+        case .suggested: return contentAnalysis?.suggestedBytes.map { formatBytes($0) + " · suggested export" } ?? "Scan to analyze contents"
         case .header: return cartridge?.romSize.map { formatBytes($0.bytes) + " · header only" } ?? "No valid header size"
         case .custom: return Int(forcedROMSize).map { formatBytes($0) + " · custom" } ?? "Set size in Advanced Settings"
         }
@@ -125,7 +128,7 @@ struct SelectedFile: Sendable, Identifiable {
     // All scan entry points share this flow, including reconnect and the menu shortcut.
     func refresh() async {
         guard !isBusy else { return }
-        isInspecting = true; errorMessage = nil; clearOperationPresentation(); cartridge = nil; invalidateReview()
+        isInspecting = true; errorMessage = nil; clearOperationPresentation(); cartridge = nil; contentAnalysis = nil; invalidateReview()
         defer { isInspecting = false }
         if demoMode {
             scanStep = "Reading sample cartridge"
@@ -146,7 +149,16 @@ struct SelectedFile: Sendable, Identifiable {
                 connected = true
                 scanStep = "Identifying flash and reading game information"
                 let snapshot = try await controller.inspect(profile:profile,override:configurationOverride)
+                scanStep = "Analyzing ROM contents"
+                let model = self
+                let analysis = try await controller.analyze(snapshot) { [weak model] value in
+                    Task { @MainActor [weak model] in
+                        guard model?.isInspecting == true, value.total > 0 else { return }
+                        model?.scanStep = "Analyzing ROM contents · \(value.completed * 100 / value.total)%"
+                    }
+                }
                 cartridge = snapshot
+                contentAnalysis = analysis
                 configurationPending = false
                 backupSRAM = snapshot.saveLayout != nil
                 if !snapshot.canWrite { writeROM = false }
@@ -159,6 +171,7 @@ struct SelectedFile: Sendable, Identifiable {
     }
     func configurationChanged() {
         invalidateReview()
+        contentAnalysis = nil
         configurationPending = cartridge != nil
     }
     func useDetectedConfiguration() {
@@ -173,7 +186,7 @@ struct SelectedFile: Sendable, Identifiable {
     }
     func updateConnectionMode() async {
         guard !operationRunning else { return }
-        try? await controller.disconnect(); connected = false; cartridge = nil
+        try? await controller.disconnect(); connected = false; cartridge = nil; contentAnalysis = nil
         if demoMode { await refresh() } else { await scanPorts() }
     }
     func selectFile(_ result: Result<URL,Error>, forROM: Bool) {
@@ -205,6 +218,7 @@ struct SelectedFile: Sendable, Identifiable {
             else {
                 switch backupLength {
                 case .automatic: count = cartridge.romReadLimit
+                case .suggested: count = contentAnalysis?.suggestedBytes
                 case .header: count = cartridge.romSize?.bytes
                 case .custom: count = Int(override)
                 }
@@ -212,7 +226,7 @@ struct SelectedFile: Sendable, Identifiable {
             if backupROM, count == nil { throw FlashMDError.invalid("Choose a ROM backup length in Advanced Settings. This cartridge has no usable size information.") }
             if backupSRAM, cartridge.saveLayout == nil { throw FlashMDError.invalid("No SRAM range was detected. Choose ROM only or configure save memory in Advanced Settings.") }
             guard let destination = chooseDestination(prompt:"Choose backup destination") else { return }
-            let request = try BackupRequest(cartridge:cartridge,romBytes:count,saveLayout:backupSRAM ? cartridge.saveLayout : nil,saveFormat:saveFormat,verify:verifyBackup,destination:destination)
+            let request = try BackupRequest(cartridge:cartridge,romBytes:count,saveLayout:backupSRAM ? cartridge.saveLayout : nil,saveFormat:saveFormat,verify:verifyBackup,destination:destination,contentAnalysis:contentAnalysis)
             beginOperation(title:"Cartridge backup") { controller,progress in try await controller.backup(request,progress:progress) }
         } catch { errorMessage = error.localizedDescription }
     }
@@ -224,7 +238,7 @@ struct SelectedFile: Sendable, Identifiable {
             let destination = backupBeforeWrite ? chooseDestination(prompt:"Choose pre-write backup destination") : nil
             if backupBeforeWrite, destination == nil { return }
             reviewPlan = try WritePlan(target:cartridge,image:writeROM ? selectedROM?.image : nil,romName:selectedROM?.name,
-                save:writeSRAM ? selectedSRAM?.data : nil,saveName:selectedSRAM?.name,format:saveFormat,backupDestination:destination)
+                save:writeSRAM ? selectedSRAM?.data : nil,saveName:selectedSRAM?.name,format:saveFormat,backupDestination:destination,clearUnusedROM:clearUnusedROM)
             showReview = true
         } catch { errorMessage = error.localizedDescription }
     }
@@ -259,8 +273,10 @@ struct SelectedFile: Sendable, Identifiable {
                 operationResult = result
                 record(.init(title:title,detail:result.manifest.phases.joined(separator:" · "),outcome:result.manifest.outcome,result:result,id:eventID,date:eventDate))
                 completionMessage = title == "Cartridge backup" ? (verifyBackup ? "Backup completed and compared with a second read." : "Backup completed. A second-read verification was not requested.") : "Write completed. All written contents passed readback verification."
+                if result.manifest.preservedSaveSHA256 != nil { completionMessage = "ROM write verified. Existing save data was preserved and checked." }
                 progress = .init(.completed,detail:completionMessage ?? "Completed")
                 cartridge = try? await controller.inspect(profile:profile,override:configurationOverride)
+                if title == "Cartridge write" { contentAnalysis = nil; if backupLength == .suggested { backupLength = .automatic } }
             } catch {
                 let failure = error as? OperationFailure
                 record(.init(title:title,detail:error.localizedDescription,outcome:failure?.result.manifest.outcome ?? "failed",result:failure?.result,id:eventID,date:eventDate))

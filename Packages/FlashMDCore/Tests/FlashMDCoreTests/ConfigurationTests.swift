@@ -81,7 +81,7 @@ import Testing
     let folder = try #require(result.folder)
     let artifact = try #require(result.manifest.artifacts.first(where: { $0.isROM }))
     let original = try Data(contentsOf:folder.appendingPathComponent(artifact.filename))
-    #expect(original == Data(repeating:0xFF,count:plan.requiredBytes))
+    #expect(original == Data(repeating:0xFF,count:target.romReadLimit))
     #expect(result.manifest.artifacts.first?.verified == true)
     #expect(result.manifest.outcome == "completed")
 }

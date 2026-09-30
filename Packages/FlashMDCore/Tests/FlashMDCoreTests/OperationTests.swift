@@ -77,8 +77,58 @@ import Testing
 @Test func romOnlyPreservesEntireSave() throws {
     let device = MemoryDevice(), oldSave = device.sram, target = try device.inspect(profile:.krikzz4M)
     let plan = try WritePlan(target:target,image:ROMImage(data:fixtureROM(title:"NEW GAME")),romName:"new.bin",save:nil,saveName:nil,format:.raw,backupDestination:nil)
-    _ = try OperationRunner.write(device:device,plan:plan,progress:{_ in})
+    let result = try OperationRunner.write(device:device,plan:plan,progress:{_ in})
     #expect(device.sram == oldSave); #expect(device.restores == 0)
+    #expect(result.manifest.phases.contains("Existing SRAM preserved and verified"))
+    #expect(result.manifest.preservedSaveSHA256 == hash(try target.saveLayout!.pack(oldSave)))
+}
+@Test func romOnlyBackupIncludesFullROMAndExistingSave() throws {
+    let device = MemoryDevice(), target = try device.inspect(profile:.krikzz4M), destination = try tempFolder()
+    defer { try? FileManager.default.removeItem(at:destination) }
+    let oldROM = Data(device.rom.prefix(target.romReadLimit)), oldSave = device.sram
+    let plan = try WritePlan(target:target,image:ROMImage(data:fixtureROM()),romName:"new.bin",save:nil,saveName:nil,format:.raw,backupDestination:destination)
+    let result = try OperationRunner.write(device:device,plan:plan,progress:{_ in})
+    let folder = try #require(result.folder)
+    #expect(try Data(contentsOf:folder.appendingPathComponent("TEST GAME.bin")) == oldROM)
+    #expect(try Data(contentsOf:folder.appendingPathComponent("TEST GAME.srm")) == oldSave)
+}
+@Test func romOnlySaveReadFailureStopsBeforeErasing() throws {
+    let device = MemoryDevice(), target = try device.inspect(profile:.krikzz4M)
+    let plan = try WritePlan(target:target,image:ROMImage(data:fixtureROM()),romName:"new.bin",save:nil,saveName:nil,format:.raw,backupDestination:nil)
+    device.failSaveRead = true
+    #expect(throws:(any Error).self) { try OperationRunner.write(device:device,plan:plan,progress:{_ in}) }
+    #expect(device.erasures == 0 && device.programs == 0)
+}
+@Test func unexpectedSaveChangeIsRecoveredAndVerified() throws {
+    let device = MemoryDevice(), target = try device.inspect(profile:.krikzz4M), oldSave = device.sram
+    let plan = try WritePlan(target:target,image:ROMImage(data:fixtureROM()),romName:"new.bin",save:nil,saveName:nil,format:.raw,backupDestination:nil)
+    device.changeSaveOnErase = true
+    let result = try OperationRunner.write(device:device,plan:plan,progress:{_ in})
+    #expect(device.sram == oldSave && device.restores == 1)
+    #expect(result.manifest.phases.contains("Existing SRAM recovered"))
+}
+@Test func clearingUnusedROMRemovesOldDataAndKeepsSave() throws {
+    let device = MemoryDevice(), target = try device.inspect(profile:.krikzz4M), originalSave = device.sram
+    device.rom[0x180000] = 0x12
+    let image = try ROMImage(data:fixtureROM())
+    let plan = try WritePlan(target:target,image:image,romName:"new.bin",save:nil,saveName:nil,format:.raw,backupDestination:nil,clearUnusedROM:true)
+    #expect(plan.requiredBytes == target.romReadLimit)
+    _ = try OperationRunner.write(device:device,plan:plan,progress:{_ in})
+    #expect(Data(device.rom.prefix(image.data.count)) == image.data)
+    #expect(device.rom[image.data.count..<target.romReadLimit].allSatisfy { $0 == 0xFF })
+    #expect(device.sram == originalSave && device.restores == 0)
+}
+@Test func manualOverrideCannotEraseThroughSRAM() throws {
+    let device = MemoryDevice(), detected = try device.inspect(profile:.automatic)
+    let override = try CartridgeConfiguration(romCapacity:0x400000,saveLayout:detected.saveLayout)
+    let target = detected.applying(override)
+    #expect(throws:(any Error).self) { try WritePlan(target:target,image:ROMImage(data:fixtureROM()),romName:"new.bin",save:nil,saveName:nil,format:.raw,backupDestination:nil,clearUnusedROM:true) }
+    #expect(device.erasures == 0)
+}
+@Test func clearingUnusedROMStillRejectsOversizedInput() throws {
+    let device = MemoryDevice(), target = try device.inspect(profile:.krikzz4M)
+    let oversized = try ROMImage(data:fixtureROM(bytes:0x300000))
+    #expect(throws:(any Error).self) { try WritePlan(target:target,image:oversized,romName:"large.bin",save:nil,saveName:nil,format:.raw,backupDestination:nil,clearUnusedROM:true) }
 }
 @Test func sramOnlyNeverErasesROM() throws {
     let device = MemoryDevice(), oldROM = device.rom, target = try device.inspect(profile:.krikzz4M)

@@ -42,6 +42,12 @@ public actor ProgrammerController {
     public func backup(_ request: BackupRequest, progress: @escaping ProgressHandler) throws -> OperationResult {
         try perform { device in try OperationRunner.backup(device:device,request:request,progress:progress) }
     }
+    public func analyze(_ cartridge: CartridgeSnapshot, progress: @escaping ProgressHandler) throws -> ROMContentAnalysis {
+        guard !operationRunning, let device else { throw FlashMDError.busy }
+        operationRunning = true
+        defer { operationRunning = false; try? device.reset() }
+        return try ROMContentAnalysis.read(device:device,cartridge:cartridge,progress:progress)
+    }
     public func write(_ plan: WritePlan, progress: @escaping ProgressHandler) throws -> OperationResult {
         try perform { device in try OperationRunner.write(device:device,plan:plan,progress:progress) }
     }

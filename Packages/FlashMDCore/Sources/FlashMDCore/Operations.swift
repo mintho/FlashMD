@@ -20,12 +20,14 @@ public struct BackupRequest: Sendable {
     public let saveFormat: SaveFormat
     public let verify: Bool
     public let destination: URL
-    public init(cartridge: CartridgeSnapshot, romBytes: Int?, saveLayout: SRAMLayout?, saveFormat: SaveFormat = .raw, verify: Bool, destination: URL) throws {
+    public let contentAnalysis: ROMContentAnalysis?
+    public init(cartridge: CartridgeSnapshot, romBytes: Int?, saveLayout: SRAMLayout?, saveFormat: SaveFormat = .raw, verify: Bool, destination: URL, contentAnalysis: ROMContentAnalysis? = nil) throws {
         guard romBytes != nil || saveLayout != nil else { throw FlashMDError.invalid("Choose ROM, SRAM, or both.") }
         if let count = romBytes {
             guard count >= 512, count <= cartridge.romReadLimit else { throw FlashMDError.invalid("ROM backup size exceeds the supported cartridge range. Scan the cartridge or adjust its accessible capacity in Advanced Settings.") }
         }
         self.cartridge = cartridge; self.romBytes = romBytes; self.saveLayout = saveLayout; self.saveFormat = saveFormat; self.verify = verify; self.destination = destination
+        self.contentAnalysis = contentAnalysis
     }
 }
 
@@ -41,17 +43,23 @@ public struct WritePlan: Sendable {
     public let fingerprint: String
     public let inputs: [TransferInput]
     public var requiredBytes: Int { rom?.count ?? 0 }
-    public init(target: CartridgeSnapshot, image: ROMImage?, romName: String?, save: Data?, saveName: String?, format: SaveFormat, backupDestination: URL?) throws {
+    public init(target: CartridgeSnapshot, image: ROMImage?, romName: String?, save: Data?, saveName: String?, format: SaveFormat, backupDestination: URL?, clearUnusedROM: Bool = false) throws {
         guard !target.isDemo else { throw FlashMDError.invalid("Demo cartridges cannot be written.") }
         guard image != nil || save != nil else { throw FlashMDError.invalid("Choose a ROM and/or save file to write.") }
         if image != nil, !target.canWrite { throw FlashMDError.invalid("ROM writing requires a supported flash programming algorithm and known accessible capacity.") }
         if save != nil, !target.canRestoreSave { throw FlashMDError.invalid("No writable SRAM layout is configured. Adjust Advanced Settings.") }
         var representation: Data?
         if let image, let geometry = target.geometry {
-            guard image.data.count <= geometry.capacity, image.metadata.declaredROMBytes == image.data.count else { throw FlashMDError.invalid("The ROM file/header length is inconsistent or exceeds cartridge capacity.") }
+            guard image.data.count <= geometry.capacity, image.data.count <= target.romReadLimit,
+                  image.metadata.declaredROMBytes == image.data.count else { throw FlashMDError.invalid("The ROM file/header length is inconsistent or exceeds cartridge capacity.") }
             if image.metadata.saveWarning != nil { throw FlashMDError.invalid("The game uses an unsupported save type.") }
-            let length = try geometry.programLength(image.data.count)
+            let length = try geometry.programLength(clearUnusedROM ? target.romReadLimit : image.data.count)
             guard length <= (target.flashCapacity?.bytes ?? 0) else { throw FlashMDError.invalid("The aligned ROM exceeds accessible flash capacity.") }
+            if let layout = target.saveLayout {
+                guard length <= layout.base, geometry.sectors.filter({ $0.offset < length }).allSatisfy({ $0.offset + $0.bytes <= layout.base }) else {
+                    throw FlashMDError.invalid("ROM erase/programming would overlap the SRAM address range. Correct the cartridge configuration before writing.")
+                }
+            }
             representation = image.data + Data(repeating: 0xFF, count: length - image.data.count)
         }
         var rawSave: Data?, layout: SRAMLayout?
@@ -106,6 +114,8 @@ public struct OperationManifest: Codable, Sendable {
     public var configurationOverride: CartridgeConfiguration? = nil
     public var programmedROMBytes: Int? = nil
     public var restoredActiveSaveBytes: Int? = nil
+    public var contentAnalysis: ROMContentAnalysis? = nil
+    public var preservedSaveSHA256: String? = nil
 }
 public struct OperationResult: Sendable {
     public let folder: URL?
@@ -126,9 +136,16 @@ public enum OperationRunner {
         let romFilename = name + ".bin", saveFilename = name + ".srm"
         var manifest = makeManifest(request.cartridge)
         manifest.configurationOverride = request.cartridge.configurationOverride
+        manifest.contentAnalysis = request.contentAnalysis
         do {
             let fresh = try device.inspect(profile: request.cartridge.profile).applying(request.cartridge.configurationOverride)
             guard fresh == request.cartridge else { throw FlashMDError.invalid("The cartridge changed. Refresh and choose the backup again.") }
+            if let count = request.romBytes, count < fresh.romReadLimit, let analysis = request.contentAnalysis {
+                let current = try ROMContentAnalysis.read(device:device,cartridge:fresh,progress:progress)
+                guard current.scannedBytes == analysis.scannedBytes, current.sha256 == analysis.sha256 else {
+                    throw FlashMDError.invalid("ROM contents changed since the size suggestion. Scan again before exporting a shorter ROM.")
+                }
+            }
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)
             if let count = request.romBytes {
                 let digest = try streamROMBackup(device, count: count, verify: request.verify,
@@ -166,8 +183,17 @@ public enum OperationRunner {
         do {
             let fresh = try device.inspect(profile: plan.target.profile).applying(plan.target.configurationOverride)
             guard fresh == plan.target else { throw FlashMDError.invalid("The target cartridge or capacity changed after review. Refresh and review again.") }
+            let preservedLayout = plan.rom != nil && plan.save == nil ? fresh.saveLayout : nil
+            var preservedSave: Data?
+            if let layout = preservedLayout {
+                let first = try readSave(device,layout:layout,progress:progress)
+                let second = try readSave(device,layout:layout,progress:progress)
+                try compare(try layout.pack(first),try layout.pack(second))
+                preservedSave = first
+                manifest.phases.append("Existing SRAM captured and verified")
+            }
             if let destination = plan.backupDestination {
-                let backup = try BackupRequest(cartridge: fresh, romBytes: plan.rom == nil ? nil : max(fresh.romSize?.bytes ?? 0, plan.requiredBytes), saveLayout: plan.save == nil ? nil : fresh.saveLayout, verify: true, destination: destination)
+                let backup = try BackupRequest(cartridge: fresh, romBytes: plan.rom == nil ? nil : fresh.romReadLimit, saveLayout: plan.save != nil || plan.rom != nil ? fresh.saveLayout : nil, verify: true, destination: destination)
                 let result = try self.backup(device: device, request: backup, progress: progress, allowBlank:true)
                 folder = result.folder; manifest.artifacts = result.manifest.artifacts
                 manifest.phases.append("Pre-write backup verified")
@@ -198,6 +224,18 @@ public enum OperationRunner {
                 let back = try readSave(device, layout: layout, progress: { value in progress(.init(.verifying,value.completed,value.total,detail:"Verifying SRAM")) })
                 try compare(try layout.pack(raw), try layout.pack(back))
                 manifest.phases.append("SRAM verified")
+            }
+            if let original = preservedSave, let layout = preservedLayout {
+                var after = try readSave(device,layout:layout,progress:{ value in progress(.init(.verifying,value.completed,value.total,detail:"Checking existing save data")) })
+                if try layout.pack(after) != layout.pack(original) {
+                    guard fresh.canRestoreSave else { throw FlashMDError.invalid("Existing SRAM changed and cannot be restored with this layout. Use the pre-write backup to recover it.") }
+                    try device.restore(layout:layout,raw:original)
+                    after = try readSave(device,layout:layout,progress:progress)
+                    manifest.phases.append("Existing SRAM recovered")
+                }
+                try compare(try layout.pack(original),try layout.pack(after))
+                manifest.preservedSaveSHA256 = hash(try layout.pack(after))
+                manifest.phases.append("Existing SRAM preserved and verified")
             }
             manifest.outcome = "completed"
             if let folder { try writeManifest(manifest, folder: folder) }

@@ -14,6 +14,7 @@ struct CartridgeWorkspaceView: View {
     @State private var pendingAdvancedScroll = false
     @State private var details = false
     @State private var fileDetails = false
+    @State private var analysisDetails = false
 
     var body: some View {
         ZStack {
@@ -203,6 +204,22 @@ struct CartridgeWorkspaceView: View {
                 selectionCard("Game ROM",subtitle:model.backupSizeDescription,symbol:"gamecontroller",selected:$model.backupROM,enabled:true)
                 selectionCard("Save data",subtitle:model.cartridge?.saveLayout.map { formatBytes($0.activeBytes) + " of SRAM" } ?? "No SRAM configured",symbol:"externaldrive",selected:$model.backupSRAM,enabled:model.cartridge?.saveLayout != nil)
             }
+            if model.backupROM, let analysis = model.contentAnalysis, let suggested = analysis.suggestedBytes {
+                HStack(spacing:12) {
+                    VStack(alignment:.leading,spacing:3) {
+                        Text("Suggested export · \(formatBytes(suggested))").font(.caption.weight(.semibold))
+                        Text("Estimate from ROM contents. Complete backup remains the default.").font(.caption2).foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength:0)
+                    Button("Details") { analysisDetails = true }.buttonStyle(.plain).foregroundStyle(flashViolet)
+                        .popover(isPresented:$analysisDetails) { analysisSummary(analysis).padding(24).frame(width:420) }
+                    if suggested < analysis.scannedBytes, model.backupLength != .suggested {
+                        Button("Use Suggestion") { model.backupLength = .suggested }.controlSize(.small)
+                    } else if model.backupLength == .suggested {
+                        Button("Use Complete ROM") { model.backupLength = .automatic }.controlSize(.small)
+                    }
+                }.font(.caption)
+            }
             HStack(alignment:.center) {
                 Text(model.verifyBackup ? "Verified files in a new backup folder." : "Second-read verification is off.").font(.caption).foregroundStyle(.secondary)
                 Spacer()
@@ -211,15 +228,28 @@ struct CartridgeWorkspaceView: View {
         }.disabled(model.isBusy)
     }
 
+    private func analysisSummary(_ analysis:ROMContentAnalysis) -> some View {
+        VStack(alignment:.leading,spacing:14) {
+            Text("ROM Content Analysis").font(.title2.weight(.semibold))
+            LabeledContent("Scanned range",value:formatBytes(analysis.scannedBytes))
+            LabeledContent("Header declaration",value:analysis.headerBytes.map(formatBytes) ?? "Unknown")
+            if let suggested = analysis.suggestedBytes { LabeledContent("Suggested export",value:"\(suggested.formatted()) bytes") }
+            LabeledContent("Erased end area (FF)",value:formatBytes(analysis.trailingErasedBytes))
+            if let period = analysis.possibleMirrorBytes { LabeledContent("Possible repeated block",value:formatBytes(period)) }
+            Text(analysis.explanation).font(.callout)
+            Text("An estimate, not a verified game length. Old flash contents and intentional filler cannot always be distinguished from game data. A complete backup preserves every accessible ROM byte.").font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
     private var writePanel: some View {
         VStack(alignment:.leading,spacing:14) {
-            Text("Choose your files, then review what will change.").font(.callout).foregroundStyle(.secondary)
+            Text(model.writeROM && !model.writeSRAM && model.cartridge?.saveLayout != nil ? "Write the ROM; existing save data is preserved and checked." : "Choose your files, then review what will change.").font(.callout).foregroundStyle(.secondary)
             HStack(spacing:12) {
                 writeFileCard("Game ROM",file:model.selectedROM,selected:$model.writeROM,enabled:model.cartridge?.canWrite == true,forROM:true)
                 writeFileCard("Save data",file:model.selectedSRAM,selected:$model.writeSRAM,enabled:model.cartridge?.canRestoreSave == true,forROM:false)
             }
             if model.writeROM, let image = model.selectedROM?.image {
-                if let geometry = model.cartridge?.geometry, let bytes = try? geometry.programLength(image.data.count) {
+                if let geometry = model.cartridge?.geometry, let bytes = try? geometry.programLength(model.clearUnusedROM ? (model.cartridge?.romReadLimit ?? image.data.count) : image.data.count) {
                     let capacity = model.cartridge?.flashCapacity?.bytes ?? 0
                     Text("\(formatBytes(bytes)) required including padding · \(formatBytes(capacity)) available")
                         .font(.caption).foregroundStyle(bytes <= capacity ? Color.secondary : Color.red)
@@ -327,7 +357,7 @@ struct CartridgeWorkspaceView: View {
             VStack(alignment:.leading,spacing:10) {
                 Text("Backup and verification").font(.headline)
                 Picker("ROM backup length",selection:$model.backupLength) { ForEach(ROMBackupLength.allCases) { Text($0.title).tag($0) } }
-                Text("Automatic backs up the complete accessible ROM range, including unused space. Some game headers underreport the size: Header size only can omit game data. Use a custom byte count when you know the cartridge mapping.").font(.caption).foregroundStyle(.secondary)
+                Text("Complete ROM range is the default and includes unused space. Content analysis suggests a smaller export when the end is erased; it cannot prove which bytes the game needs. Header size only can omit data. Use a custom byte count for a known size.").font(.caption).foregroundStyle(.secondary)
                 if model.backupLength == .custom {
                     LabeledContent("ROM bytes to read") { TextField("2097152",text:$model.forcedROMSize).textFieldStyle(.roundedBorder).accessibilityLabel("ROM bytes to read") }
                     HStack {
@@ -340,6 +370,8 @@ struct CartridgeWorkspaceView: View {
                 Text("FlashKit raw includes both bus lanes. Packed stores only active save bytes; file lengths are checked before restoration.").font(.caption).foregroundStyle(.secondary)
                 Toggle("Verify backups with a second read",isOn:$model.verifyBackup)
                 Toggle("Back up affected contents before writing",isOn:$model.backupBeforeWrite)
+                Toggle("Clear remaining ROM space when writing",isOn:$model.clearUnusedROM)
+                Text("Erases the complete accessible ROM range and fills space after the new file with FF. Removes old game remnants; existing SRAM is preserved unless you choose a save file to replace it.").font(.caption).foregroundStyle(.secondary)
             }
             Divider().opacity(0.4)
             VStack(alignment:.leading,spacing:10) {
@@ -533,7 +565,7 @@ private struct CartridgeArtwork: View {
 }
 
 func formatBytes(_ count:Int) -> String {
-    if count >= 1048576 { return "\((Double(count)/1048576).formatted(.number.precision(.fractionLength(0...2)))) MiB" }
+    if count >= 1048576 { return "\((Double(count)/1048576).formatted(.number.precision(.fractionLength(0...3)))) MiB" }
     if count >= 1024 { return "\((Double(count)/1024).formatted(.number.precision(.fractionLength(0...2)))) KiB" }
     return "\(count) bytes"
 }
