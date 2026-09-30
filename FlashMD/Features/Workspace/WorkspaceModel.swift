@@ -12,11 +12,11 @@ enum ROMBackupLength: String, CaseIterable, Identifiable {
 enum SaveImportFormat: String, CaseIterable, Identifiable {
     case automatic, packed, raw
     var id: Self { self }
-    var title: String { switch self { case .automatic: "Automatic"; case .packed: "Save data"; case .raw: "FlashKit raw dump" } }
+    var title: String { switch self { case .automatic: "Automatic"; case .packed: SaveFormat.packed.displayName; case .raw: SaveFormat.raw.displayName } }
     var explanation: String { switch self {
-        case .automatic: "Detects the format from the file size and cartridge."
-        case .packed: "A file containing only save bytes."
-        case .raw: "A full FlashKit SRAM dump, including unused bytes."
+        case .automatic: "Matches the file size to the cartridge's SRAM layout."
+        case .packed: "Contains only the SRAM save data."
+        case .raw: "Includes both byte lanes and unused bytes."
     } }
 }
 struct SelectedFile: Sendable, Identifiable {
@@ -87,7 +87,7 @@ struct SelectedFile: Sendable, Identifiable {
         case .custom: "Reads the number of bytes you enter."
     } }
     var saveFormatExplanation: String {
-        saveFormat == .packed ? "Only save bytes. Recommended for everyday backups." : "Full FlashKit SRAM dump, including unused bytes."
+        saveFormat == .packed ? SaveImportFormat.packed.explanation : SaveImportFormat.raw.explanation
     }
     var forcedROMSize = ""
     var selectedROM: SelectedFile? { didSet { invalidateReview() } }
@@ -267,7 +267,7 @@ struct SelectedFile: Sendable, Identifiable {
                 let candidates = SaveFormat.allCases.compactMap { try? plan($0,save:save) }
                 guard let first = candidates.first else { throw FlashMDError.invalid("This save file does not match the cartridge. Check the save format and SRAM settings in Advanced Settings.") }
                 guard candidates.allSatisfy({ $0.save == first.save && $0.saveLayout == first.saveLayout }) else {
-                    throw FlashMDError.invalid("The save format is ambiguous. Choose Save data or FlashKit raw dump in Advanced Settings.")
+                    throw FlashMDError.invalid("The SRAM format is ambiguous. Choose Save bytes only or Full bus dump in Advanced Settings.")
                 }
                 reviewPlan = first
             } else {

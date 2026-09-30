@@ -374,7 +374,7 @@ struct CartridgeWorkspaceView: View {
                     }
                     Text("Bytes to read, up to cartridge capacity. 2097152 = 2 MiB.").font(.caption).foregroundStyle(.secondary)
                 }
-                Picker("Save format",selection:$model.saveFormat) { Text(SaveFormat.packed.displayName).tag(SaveFormat.packed); Text(SaveFormat.raw.displayName).tag(SaveFormat.raw) }
+                Picker("SRAM export format",selection:$model.saveFormat) { Text(SaveFormat.packed.displayName).tag(SaveFormat.packed); Text(SaveFormat.raw.displayName).tag(SaveFormat.raw) }
                 Text(model.saveFormatExplanation).font(.caption).foregroundStyle(.secondary)
                 Toggle("Verify backup",isOn:$model.verifyBackup)
                 Text("Reads twice and compares the results.").font(.caption).foregroundStyle(.secondary)
@@ -384,7 +384,7 @@ struct CartridgeWorkspaceView: View {
                 Text("Writing").font(.headline)
                 Toggle("Clear unused ROM space",isOn:$model.clearUnusedROM)
                 Text("Erases cartridge ROM beyond the new game.").font(.caption).foregroundStyle(.secondary)
-                Picker("Save file format",selection:$model.saveImportFormat) { ForEach(SaveImportFormat.allCases) { Text($0.title).tag($0) } }
+                Picker("SRAM input format",selection:$model.saveImportFormat) { ForEach(SaveImportFormat.allCases) { Text($0.title).tag($0) } }
                 Text(model.saveImportFormat.explanation).font(.caption).foregroundStyle(.secondary)
             }
             Divider().opacity(0.4)
