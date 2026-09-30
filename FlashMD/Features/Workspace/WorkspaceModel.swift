@@ -38,6 +38,7 @@ struct SelectedFile: Sendable, Identifiable {
 @MainActor @Observable final class WorkspaceModel {
     var direction = TransferDirection.backup
     var demoMode = false { didSet { guard oldValue != demoMode else { return }; invalidateReview(); Task { await updateConnectionMode() } } }
+    var mapper = ROMMapper.automatic { didSet { configurationChanged() } }
     var profile: CartridgeProfile = .automatic { didSet { configurationChanged() } }
     var manualConfiguration = false { didSet { configurationChanged() } }
     var capacityChoice = 0x400000 { didSet { configurationChanged() } }
@@ -109,12 +110,14 @@ struct SelectedFile: Sendable, Identifiable {
     var operationRunning = false
     var loadingFile = false
     var isBusy: Bool { isInspecting || operationRunning || loadingFile }
-    var canBackup: Bool { !isBusy && !configurationPending && !demoMode && connected && cartridge != nil && (backupROM || backupSRAM) }
+    var canBackup: Bool { !isBusy && !configurationPending && !demoMode && connected && cartridge != nil && (backupROM || backupSRAM) && (!backupROM || cartridge?.canBackupROM == true) }
     var canReviewWrite: Bool {
         guard !isBusy, !configurationPending, !demoMode, connected, let cartridge, writeROM || writeSRAM else { return false }
         return (!writeROM || (cartridge.canWrite && selectedROM != nil)) && (!writeSRAM || (cartridge.canRestoreSave && selectedSRAM != nil))
     }
     var backupSizeDescription: String {
+        if let cartridge, !cartridge.canBackupROM { return "Complete ROM unavailable" }
+        if let cartridge, cartridge.mapper != .linear { return formatBytes(cartridge.romReadLimit) + " · complete banked ROM" }
         switch backupLength {
         case .complete: return cartridge.map { formatBytes($0.romReadLimit) + " · complete ROM range" } ?? "Size not yet known"
         case .suggested:
@@ -168,15 +171,15 @@ struct SelectedFile: Sendable, Identifiable {
                 try await controller.connect(path:port.path)
                 connected = true
                 scanStep = "Identifying flash and reading game information"
-                let snapshot = try await controller.inspect(profile:profile,override:configurationOverride)
+                let snapshot = try await controller.inspect(profile:profile,override:configurationOverride,mapper:mapper)
                 scanStep = "Analyzing ROM contents"
                 let model = self
-                let analysis = try await controller.analyze(snapshot) { [weak model] value in
+                let analysis = snapshot.canBackupROM ? try await controller.analyze(snapshot) { [weak model] value in
                     Task { @MainActor [weak model] in
                         guard model?.isInspecting == true, value.total > 0 else { return }
                         model?.scanStep = "Analyzing ROM contents · \(value.completed * 100 / value.total)%"
                     }
-                }
+                } : nil
                 cartridge = snapshot
                 contentAnalysis = analysis
                 configurationPending = false
@@ -236,7 +239,7 @@ struct SelectedFile: Sendable, Identifiable {
             let count: Int?
             if !backupROM { count = nil }
             else {
-                switch backupLength {
+                switch cartridge.mapper == .linear ? backupLength : .complete {
                 case .complete: count = cartridge.romReadLimit
                 case .suggested: count = contentAnalysis?.suggestedBytes ?? cartridge.romReadLimit
                 case .header: count = cartridge.romSize?.bytes
@@ -324,10 +327,10 @@ struct SelectedFile: Sendable, Identifiable {
                 progressID = nil
                 operationResult = result
                 record(.init(title:title,detail:result.manifest.phases.joined(separator:" · "),outcome:result.manifest.outcome,result:result,id:eventID,date:eventDate))
-                completionMessage = title == "Cartridge backup" ? (verifyBackup ? "Files saved and verified." : "Files saved. Verification was off.") : "Written and verified."
+                completionMessage = title == "Cartridge backup" ? (result.manifest.artifacts.allSatisfy(\.verified) ? "Files saved and verified." : "Files saved. Verification was off.") : "Written and verified."
                 if result.manifest.preservedSaveSHA256 != nil { completionMessage = "ROM written and verified. Existing saves preserved." }
                 progress = .init(.completed,detail:completionMessage ?? "Completed")
-                cartridge = try? await controller.inspect(profile:profile,override:configurationOverride)
+                cartridge = try? await controller.inspect(profile:profile,override:configurationOverride,mapper:mapper)
                 if title == "Cartridge write" { contentAnalysis = nil }
             } catch {
                 let failure = error as? OperationFailure

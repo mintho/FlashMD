@@ -37,7 +37,7 @@ public struct CartridgeConfiguration: Codable, Sendable, Equatable {
     }
     public init(romCapacity: Int, saveLayout: SRAMLayout?) throws {
         guard (512...0x400000).contains(romCapacity) else {
-            throw FlashMDError.invalid("Accessible ROM capacity must be between 512 bytes and 4 MiB. Bank switching is not implemented.")
+            throw FlashMDError.invalid("Accessible ROM capacity must be between 512 bytes and 4 MiB. Use the mapper setting for banked games.")
         }
         self.romCapacity = romCapacity; self.saveLayout = saveLayout
     }
@@ -59,17 +59,23 @@ public struct CartridgeSnapshot: Sendable, Equatable {
     public let warning: String?
     public let profile: CartridgeProfile
     public let configurationOverride: CartridgeConfiguration?
-    public var canWrite: Bool { !isDemo && geometry?.supported == true && flashCapacity != nil }
-    public var romReadLimit: Int { flashCapacity?.bytes ?? min(0x400000,saveLayout?.base ?? 0x400000) }
-    public var canRestoreSave: Bool { !isDemo && saveLayout != nil && saveLayout?.lane != 0 }
+    public let mapper: ROMMapper
+    public let mapperSelection: ROMMapper
+    public let romAccess: ROMAccess
+    public let mappedROMBytes: Int?
+    public let mapperMessage: String?
+    public var canBackupROM: Bool { romAccess != .unavailable }
+    public var canWrite: Bool { mapper == .linear && romAccess == .linear && !isDemo && geometry?.supported == true && flashCapacity != nil }
+    public var romReadLimit: Int { mappedROMBytes ?? flashCapacity?.bytes ?? min(0x400000,saveLayout?.base ?? 0x400000) }
+    public var canRestoreSave: Bool { mapper == .linear && romAccess == .linear && !isDemo && saveLayout != nil && saveLayout?.lane != 0 }
 
     public func applying(_ override: CartridgeConfiguration?) -> CartridgeSnapshot {
-        guard let override else { return self }
+        guard let override, mapper == .linear, romAccess == .linear else { return self }
         let capacity = MemoryMeasurement(bytes:min(override.romCapacity,geometry?.capacity ?? 0x400000),source:.profile)
         return .init(title:title,regions:regions,romSize:romSize,flashCapacity:capacity,
             rawSaveWindow:override.saveLayout.map { .init(bytes:$0.windowBytes,source:.profile) },isDemo:isDemo,
             metadata:metadata,geometry:geometry,saveLayout:override.saveLayout,identity:identity,fingerprint:fingerprint,
-            warning:warning,profile:profile,rawHeader:rawHeader,configurationOverride:override)
+            warning:warning,profile:profile,rawHeader:rawHeader,configurationOverride:override,mapper:mapper,mapperSelection:mapperSelection,romAccess:romAccess,mappedROMBytes:mappedROMBytes,mapperMessage:mapperMessage)
     }
 
     public init(
@@ -87,8 +93,15 @@ public struct CartridgeSnapshot: Sendable, Equatable {
         warning: String? = nil,
         profile: CartridgeProfile = .automatic,
         rawHeader: Data? = nil,
-        configurationOverride: CartridgeConfiguration? = nil
+        configurationOverride: CartridgeConfiguration? = nil,
+        mapper: ROMMapper = .linear,
+        mapperSelection: ROMMapper = .automatic,
+        romAccess: ROMAccess = .linear,
+        mappedROMBytes: Int? = nil,
+        mapperMessage: String? = nil
     ) {
+        self.mapper = mapper; self.mapperSelection = mapperSelection; self.romAccess = romAccess
+        self.mappedROMBytes = mappedROMBytes; self.mapperMessage = mapperMessage
         self.configurationOverride = configurationOverride
         self.title = title
         self.regions = regions

@@ -3,6 +3,7 @@ import Foundation
 public protocol CartridgeDevice: AnyObject, Sendable {
     var identity: String { get }
     func inspect(profile: CartridgeProfile) throws -> CartridgeSnapshot
+    func inspect(profile: CartridgeProfile, mapper: ROMMapper) throws -> CartridgeSnapshot
     func readROM(offset: Int, count: Int) throws -> Data
     func readSRAM(layout: SRAMLayout, offset: Int, count: Int) throws -> Data
     func erase(sector: FlashSector) throws
@@ -12,10 +13,20 @@ public protocol CartridgeDevice: AnyObject, Sendable {
     func close()
 }
 
+public extension CartridgeDevice {
+    func inspect(profile: CartridgeProfile, mapper: ROMMapper) throws -> CartridgeSnapshot {
+        guard mapper == .automatic || mapper == .linear else { throw FlashMDError.invalid("This reader does not support mapper selection.") }
+        return try inspect(profile:profile)
+    }
+}
+
 public final class FlashKitDevice: CartridgeDevice, @unchecked Sendable {
     private let transport: any ByteTransport
     public let identity: String
     private let deviceID: String
+    private var bankedReader: BankedROMReader?
+    private var mappedCartridge = false
+    private var mapperUnavailable = false
     public init(transport: any ByteTransport, path: String) throws {
         self.transport = transport
         do {
@@ -44,7 +55,7 @@ public final class FlashKitDevice: CartridgeDevice, @unchecked Sendable {
         let data = try transport.read(count: 2, timeout: 2, cancellable: true)
         return UInt16(data[0]) << 8 | UInt16(data[1])
     }
-    private func readBytes(offset: Int, count: Int) throws -> Data {
+    private func readBytes(offset: Int, count: Int, cancellable: Bool = true) throws -> Data {
         guard offset >= 0, count >= 0, count <= 65536 else { throw FlashMDError.invalid("Invalid cartridge read range.") }
         if count == 0 { return Data() }
         let base = offset & ~1, skipped = offset & 1
@@ -53,24 +64,65 @@ public final class FlashKitDevice: CartridgeDevice, @unchecked Sendable {
         let words = busCount / 2
         try address(base)
         try transport.write(Data([1,UInt8(truncatingIfNeeded: words >> 8),1,UInt8(truncatingIfNeeded: words),0x82]), timeout: 2)
-        let data = try transport.read(count: busCount, timeout: 5, cancellable: true)
+        let data = try transport.read(count: busCount, timeout: 5, cancellable: cancellable)
         return Data(data[skipped..<skipped+count])
     }
-    public func reset() throws { try word(0xF0, at: 0); try word(0, at: 0xA13000); try transport.write(Data([5,1]), timeout: 2) }
+    public func reset() throws {
+        if mappedCartridge { try bankedReader?.restore(); return }
+        try word(0xF0, at: 0); try word(0, at: 0xA13000); try transport.write(Data([5,1]), timeout: 2) }
     public func readROM(offset: Int, count: Int) throws -> Data {
+        guard !mapperUnavailable else { throw FlashMDError.invalid("Complete ROM unavailable. This reader could not switch banks.") }
+        if let bankedReader { return try bankedReader.readROM(offset:offset,count:count) }
         try word(0, at: 0xA13000)
         return try readBytes(offset: offset, count: count)
     }
     public func readSRAM(layout: SRAMLayout, offset: Int, count: Int) throws -> Data {
+        guard !mappedCartridge else { throw FlashMDError.invalid("SRAM access is not supported for this mapper.") }
         try word(0xFFFF, at: 0xA13000)
         return try readBytes(offset: layout.base+offset, count: count)
     }
     public func inspect(profile: CartridgeProfile) throws -> CartridgeSnapshot {
-        defer { try? reset() }
-        try word(0, at: 0xA13000)
+        try inspect(profile:profile,mapper:.automatic)
+    }
+    public func inspect(profile: CartridgeProfile, mapper selection: ROMMapper) throws -> CartridgeSnapshot {
+        try bankedReader?.restore()
+        bankedReader = nil; mappedCartridge = false; mapperUnavailable = false
         let header = try readBytes(offset: 0, count: 512)
         let metadata = try? ROMMetadata.parse(header)
         let validHeader = Data(header[0x100..<0x104]) == Data("SEGA".utf8)
+        let detected = ROMMapper.detect(validHeader ? metadata : nil)
+        guard detected == .linear || selection == .automatic || selection == detected else {
+            throw FlashMDError.invalid("This cartridge uses \(detected.displayName). Select Automatic or \(detected.displayName).")
+        }
+        let mapper = selection == .automatic ? detected : selection
+        let oversized = (metadata?.declaredROMBytes ?? 0) > 0x400000
+        if mapper != .linear || detected != .linear || oversized {
+            mappedCartridge = true
+            let size = mapper.size(metadata)
+            var qualified = false
+            if mapper == .segaSSF2 || mapper == .pierSolar,
+               let size, size > 0x400000, size <= 0x1000000 {
+                let reader = BankedROMReader(mapper:mapper,size:size,
+                    select:{ [unowned self] address, value in try self.byte(value,at:address) },
+                    read:{ [unowned self] address, count in try self.readBytes(offset:address,count:count,cancellable:false) })
+                bankedReader = reader
+                qualified = try reader.qualify()
+            }
+            mapperUnavailable = !qualified
+            let message: String
+            if qualified { message = "\(mapper.displayName) · bank switching verified. SRAM access and writing are unavailable." }
+            else if mapper == .linear { message = "Complete ROM unavailable. Select a known ROM mapper in Advanced Settings." }
+            else if size == nil { message = "Complete ROM unavailable. This mapper revision has no known ROM size." }
+            else { message = "Complete ROM unavailable. This reader could not verify bank switching." }
+            return .init(title:metadata?.title ?? "Unknown cartridge",regions:metadata?.regions ?? [],
+                romSize:metadata?.declaredROMBytes.map { .init(bytes:$0,source:.header) },
+                flashCapacity:nil,rawSaveWindow:nil,metadata:metadata,identity:identity,
+                fingerprint:hash(header),warning:message,profile:profile,rawHeader:Data(header[0x100..<0x200]),
+                mapper:mapper,mapperSelection:selection,romAccess:qualified ? .banked : .unavailable,
+                mappedROMBytes:size,mapperMessage:message)
+        }
+        defer { try? reset() }
+        try word(0,at:0xA13000)
         var geometry: FlashGeometry?, warning: String?
         do {
             try byte(0x98, at: 0xAA)
@@ -105,9 +157,10 @@ public final class FlashKitDevice: CartridgeDevice, @unchecked Sendable {
         return CartridgeSnapshot(title: title, regions: validHeader ? metadata?.regions ?? [] : [], romSize: validHeader ? metadata?.declaredROMBytes.map { .init(bytes: $0, source: .header) } : nil,
             flashCapacity: capacity, rawSaveWindow: layout.map { .init(bytes: $0.windowBytes, source: profile == .automatic ? .header : .profile) },
             metadata: validHeader ? metadata : nil, geometry: geometry, saveLayout: layout,
-            identity: identity, fingerprint: hash(header), warning: warning, profile: profile, rawHeader:Data(header[0x100..<0x200]))
+            identity: identity, fingerprint: hash(header), warning: warning, profile: profile, rawHeader:Data(header[0x100..<0x200]),mapperSelection:selection)
     }
     public func erase(sector: FlashSector) throws {
+        guard !mappedCartridge else { throw FlashMDError.invalid("Writing is unavailable for banked cartridges.") }
         try word(0, at: 0xA13000); try transport.write(Data([5,0]), timeout: 2)
         try word(0xAA, at: 0xAAA); try word(0x55, at: 0x554); try word(0x80, at: 0xAAA)
         try word(0xAA, at: 0xAAA); try word(0x55, at: 0x554); try word(0x30, at: sector.offset)
@@ -115,6 +168,7 @@ public final class FlashKitDevice: CartridgeDevice, @unchecked Sendable {
         _ = try transport.read(count: 2, timeout: 120, cancellable: false)
     }
     public func program(offset: Int, data: Data) throws {
+        guard !mappedCartridge else { throw FlashMDError.invalid("Writing is unavailable for banked cartridges.") }
         guard data.count > 0, data.count <= 4096, data.count.isMultiple(of: 2) else { throw FlashMDError.invalid("Invalid programming block.") }
         try byte(0xAA, at: 0xAAA); try byte(0x55, at: 0x554); try byte(0x20, at: 0xAAA)
         try address(offset)
@@ -127,6 +181,7 @@ public final class FlashKitDevice: CartridgeDevice, @unchecked Sendable {
         try byte(0x90, at: 0); try byte(0, at: 0); try word(0xF0, at: 0)
     }
     public func restore(layout: SRAMLayout, raw: Data) throws {
+        guard !mappedCartridge else { throw FlashMDError.invalid("Writing is unavailable for banked cartridges.") }
         guard layout.lane != 0 else { throw FlashMDError.invalid("Even-lane SRAM writes are not qualified for this programmer.") }
         guard raw.count == layout.windowBytes else { throw FlashMDError.invalid("Save representation length does not match the cartridge.") }
         try word(0xFFFF, at: 0xA13000)

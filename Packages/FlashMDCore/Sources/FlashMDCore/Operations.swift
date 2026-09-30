@@ -24,9 +24,16 @@ public struct BackupRequest: Sendable {
     public init(cartridge: CartridgeSnapshot, romBytes: Int?, saveLayout: SRAMLayout?, saveFormat: SaveFormat = .raw, verify: Bool, destination: URL, contentAnalysis: ROMContentAnalysis? = nil) throws {
         guard romBytes != nil || saveLayout != nil else { throw FlashMDError.invalid("Choose ROM, SRAM, or both.") }
         if let count = romBytes {
+            guard cartridge.canBackupROM else { throw FlashMDError.invalid(cartridge.mapperMessage ?? "Complete ROM unavailable. Scan with a supported reader.") }
+            if cartridge.mapper != .linear, count != cartridge.romReadLimit {
+                throw FlashMDError.invalid("Banked games require a complete ROM backup.")
+            }
             guard count >= 512, count <= cartridge.romReadLimit else { throw FlashMDError.invalid("ROM backup size exceeds the supported cartridge range. Scan the cartridge or adjust its accessible capacity in Advanced Settings.") }
         }
-        self.cartridge = cartridge; self.romBytes = romBytes; self.saveLayout = saveLayout; self.saveFormat = saveFormat; self.verify = verify; self.destination = destination
+        if cartridge.romAccess != .linear, saveLayout != nil {
+            throw FlashMDError.invalid("SRAM backup is unavailable for this mapper.")
+        }
+        self.cartridge = cartridge; self.romBytes = romBytes; self.saveLayout = saveLayout; self.saveFormat = saveFormat; self.verify = verify || cartridge.mapper != .linear; self.destination = destination
         self.contentAnalysis = contentAnalysis
     }
 }
@@ -116,6 +123,9 @@ public struct OperationManifest: Codable, Sendable {
     public var restoredActiveSaveBytes: Int? = nil
     public var contentAnalysis: ROMContentAnalysis? = nil
     public var preservedSaveSHA256: String? = nil
+    public var mapper: ROMMapper? = nil
+    public var romAccess: ROMAccess? = nil
+    public var mappedROMBytes: Int? = nil
 }
 public struct OperationResult: Sendable {
     public let folder: URL?
@@ -135,10 +145,11 @@ public enum OperationRunner {
         let folder = request.destination.appendingPathComponent("\(name) — \(date.string(from:Date())) — \(UUID().uuidString.prefix(8))", isDirectory: true)
         let romFilename = name + ".bin", saveFilename = name + ".srm"
         var manifest = makeManifest(request.cartridge)
+        manifest.mapper = request.cartridge.mapper; manifest.romAccess = request.cartridge.romAccess; manifest.mappedROMBytes = request.cartridge.mappedROMBytes
         manifest.configurationOverride = request.cartridge.configurationOverride
         manifest.contentAnalysis = request.contentAnalysis
         do {
-            let fresh = try device.inspect(profile: request.cartridge.profile).applying(request.cartridge.configurationOverride)
+            let fresh = try device.inspect(profile: request.cartridge.profile,mapper:request.cartridge.mapperSelection).applying(request.cartridge.configurationOverride)
             guard fresh == request.cartridge else { throw FlashMDError.invalid("The cartridge changed. Refresh and choose the backup again.") }
             if let count = request.romBytes, count < fresh.romReadLimit, let analysis = request.contentAnalysis {
                 let current = try ROMContentAnalysis.read(device:device,cartridge:fresh,progress:progress)
@@ -181,7 +192,7 @@ public enum OperationRunner {
         manifest.programmedROMBytes = plan.rom?.count
         manifest.restoredActiveSaveBytes = plan.saveLayout?.activeBytes
         do {
-            let fresh = try device.inspect(profile: plan.target.profile).applying(plan.target.configurationOverride)
+            let fresh = try device.inspect(profile: plan.target.profile,mapper:plan.target.mapperSelection).applying(plan.target.configurationOverride)
             guard fresh == plan.target else { throw FlashMDError.invalid("The target cartridge or capacity changed after review. Refresh and review again.") }
             let preservedLayout = plan.rom != nil && plan.save == nil ? fresh.saveLayout : nil
             var preservedSave: Data?

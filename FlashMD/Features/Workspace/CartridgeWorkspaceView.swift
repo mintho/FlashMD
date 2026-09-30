@@ -154,12 +154,12 @@ struct CartridgeWorkspaceView: View {
                 scanButton(large:false)
             }
             HStack(spacing:0) {
-                metric("ROM CAPACITY",cartridge.flashCapacity.map { formatBytes($0.bytes) } ?? "Unknown",note:cartridge.isDemo ? "Sample data" : (cartridge.configurationOverride != nil || cartridge.profile != .automatic ? "Manual configuration" : "Automatically configured"))
+                metric(cartridge.mapper == .linear ? "ROM CAPACITY" : "COMPLETE ROM",cartridge.mappedROMBytes.map { formatBytes($0) } ?? cartridge.flashCapacity.map { formatBytes($0.bytes) } ?? "Unknown",note:cartridge.mapper != .linear ? cartridge.mapper.displayName : cartridge.isDemo ? "Sample data" : (cartridge.configurationOverride != nil || cartridge.profile != .automatic ? "Manual configuration" : "Automatically configured"))
                 Rectangle().fill(Color.primary.opacity(0.1)).frame(width:1,height:42)
                 metric("HEADER ROM SIZE",cartridge.romSize.map { formatBytes($0.bytes) } ?? "No valid header",note:"Declared by the game; may be incomplete")
                     .help("Declared by the game. Backups use the scan's suggested size unless you choose complete ROM.")
                 Rectangle().fill(Color.primary.opacity(0.1)).frame(width:1,height:42)
-                metric("SAVE MEMORY",cartridge.saveLayout.map { formatBytes($0.activeBytes) + " SRAM" } ?? "None declared",note:cartridge.saveLayout == nil ? "Override in Advanced Settings" : (cartridge.configurationOverride == nil && cartridge.profile == .automatic ? "From the game header" : "Manual configuration"))
+                metric("SAVE MEMORY",cartridge.romAccess != .linear ? "Unavailable" : cartridge.saveLayout.map { formatBytes($0.activeBytes) + " SRAM" } ?? "None declared",note:cartridge.romAccess != .linear ? "Not supported for this mapper" : cartridge.saveLayout == nil ? "Override in Advanced Settings" : (cartridge.configurationOverride == nil && cartridge.profile == .automatic ? "From the game header" : "Manual configuration"))
             }.padding(.vertical,compact ? 12 : 18).background(Color.primary.opacity(scheme == .dark ? 0.035 : 0.025),in:RoundedRectangle(cornerRadius:18))
         }.padding(.top,4)
     }
@@ -190,6 +190,9 @@ struct CartridgeWorkspaceView: View {
                 if model.direction == .write { writePanel }
                 else { writePanel.hidden().allowsHitTesting(false).accessibilityHidden(true) }
             }
+            if let message = model.cartridge?.mapperMessage {
+                Text(message).font(.callout).foregroundStyle(model.cartridge?.canBackupROM == true ? Color.secondary : Color.orange)
+            }
             if model.configurationPending {
                 Text("Configuration changed. Apply it in Advanced Settings before transferring.").font(.callout).foregroundStyle(.orange)
             }
@@ -213,9 +216,9 @@ struct CartridgeWorkspaceView: View {
             }
             HStack(spacing:12) {
                 selectionCard("Game ROM",subtitle:model.backupSizeDescription,symbol:"gamecontroller",selected:$model.backupROM,enabled:true)
-                selectionCard("SRAM data",subtitle:model.cartridge?.saveLayout.map { formatBytes($0.activeBytes) + " of save data" } ?? "No SRAM configured",symbol:"externaldrive",selected:$model.backupSRAM,enabled:model.cartridge?.saveLayout != nil)
+                selectionCard("SRAM data",subtitle:model.cartridge?.saveLayout.map { formatBytes($0.activeBytes) + " of save data" } ?? (model.cartridge?.romAccess == .linear ? "No SRAM configured" : "Unavailable for this mapper"),symbol:"externaldrive",selected:$model.backupSRAM,enabled:model.cartridge?.saveLayout != nil)
             }
-            if model.backupROM, let analysis = model.contentAnalysis, let suggested = analysis.suggestedBytes {
+            if model.backupROM, model.cartridge?.mapper == .linear, let analysis = model.contentAnalysis, let suggested = analysis.suggestedBytes {
                 HStack(spacing:12) {
                     VStack(alignment:.leading,spacing:3) {
                         Text("Suggested export · \(formatBytes(suggested))").font(.caption.weight(.semibold))
@@ -345,10 +348,14 @@ struct CartridgeWorkspaceView: View {
             Text("Advanced Settings").font(.title3.weight(.semibold))
             VStack(alignment:.leading,spacing:8) {
                 Text("Cartridge configuration").font(.headline)
+                Picker("ROM mapper",selection:$model.mapper) {
+                    ForEach(ROMMapper.allCases) { Text($0.displayName).tag($0) }
+                }
+                Text("Automatic recognizes known games and checks bank switching. Change this only if detection is wrong.").font(.caption).foregroundStyle(.secondary)
                 Text(model.manualConfiguration ? "Use the memory settings for your cartridge board." : "Detected during scanning. Override if your board needs different settings.").font(.caption).foregroundStyle(.secondary).fixedSize(horizontal:false,vertical:true)
                 Picker("Configuration",selection:$model.profile) { ForEach(CartridgeProfile.allCases) { Text($0.displayName).tag($0) } }
-                    .disabled(model.manualConfiguration)
-                Toggle("Override memory configuration",isOn:Binding(get:{model.manualConfiguration},set:{ value in if value { model.useDetectedConfiguration() }; model.manualConfiguration = value }))
+                    .disabled(model.manualConfiguration || (model.cartridge.map { $0.romAccess != .linear } ?? false))
+                Toggle("Override memory configuration",isOn:Binding(get:{model.manualConfiguration},set:{ value in if value { model.useDetectedConfiguration() }; model.manualConfiguration = value })).disabled(model.cartridge.map { $0.romAccess != .linear } ?? false)
                 if model.manualConfiguration {
                     Picker("Accessible ROM capacity",selection:$model.capacityChoice) {
                         ForEach([0x10000,0x20000,0x40000,0x80000,0x100000,0x200000,0x300000,0x400000],id:\.self) { Text(formatBytes($0)).tag($0) }
@@ -371,20 +378,24 @@ struct CartridgeWorkspaceView: View {
             Divider().opacity(0.4)
             VStack(alignment:.leading,spacing:8) {
                 Text("Backup").font(.headline)
-                Picker("ROM size",selection:$model.backupLength) { ForEach(ROMBackupLength.allCases) { Text($0.title).tag($0) } }
-                Text(model.backupLengthExplanation).font(.caption).foregroundStyle(.secondary)
-                if model.backupLength == .custom {
-                    LabeledContent("ROM bytes to read") { TextField("2097152",text:$model.forcedROMSize).textFieldStyle(.roundedBorder).accessibilityLabel("ROM bytes to read") }
-                    HStack {
-                        Button("Use Header Size") { model.forcedROMSize = model.cartridge?.romSize.map { String($0.bytes) } ?? "" }.disabled(model.cartridge?.romSize == nil)
-                        Button("Use Capacity") { model.forcedROMSize = model.cartridge?.flashCapacity.map { String($0.bytes) } ?? "" }.disabled(model.cartridge?.flashCapacity == nil)
+                if let cartridge = model.cartridge, cartridge.romAccess != .linear {
+                    Text("Banked ROMs are backed up in full and verified.").font(.caption).foregroundStyle(.secondary)
+                } else {
+                    Picker("ROM size",selection:$model.backupLength) { ForEach(ROMBackupLength.allCases) { Text($0.title).tag($0) } }
+                    Text(model.backupLengthExplanation).font(.caption).foregroundStyle(.secondary)
+                    if model.backupLength == .custom {
+                        LabeledContent("ROM bytes to read") { TextField("2097152",text:$model.forcedROMSize).textFieldStyle(.roundedBorder).accessibilityLabel("ROM bytes to read") }
+                        HStack {
+                            Button("Use Header Size") { model.forcedROMSize = model.cartridge?.romSize.map { String($0.bytes) } ?? "" }.disabled(model.cartridge?.romSize == nil)
+                            Button("Use Capacity") { model.forcedROMSize = model.cartridge?.flashCapacity.map { String($0.bytes) } ?? "" }.disabled(model.cartridge?.flashCapacity == nil)
+                        }
+                        Text("Bytes to read, up to cartridge capacity. 2097152 = 2 MiB.").font(.caption).foregroundStyle(.secondary)
                     }
-                    Text("Bytes to read, up to cartridge capacity. 2097152 = 2 MiB.").font(.caption).foregroundStyle(.secondary)
+                    Picker("SRAM export format",selection:$model.saveFormat) { Text(SaveFormat.packed.displayName).tag(SaveFormat.packed); Text(SaveFormat.raw.displayName).tag(SaveFormat.raw) }
+                    Text(model.saveFormatExplanation).font(.caption).foregroundStyle(.secondary)
+                    Toggle("Verify backup",isOn:$model.verifyBackup)
+                    Text("Reads twice and compares the results.").font(.caption).foregroundStyle(.secondary)
                 }
-                Picker("SRAM export format",selection:$model.saveFormat) { Text(SaveFormat.packed.displayName).tag(SaveFormat.packed); Text(SaveFormat.raw.displayName).tag(SaveFormat.raw) }
-                Text(model.saveFormatExplanation).font(.caption).foregroundStyle(.secondary)
-                Toggle("Verify backup",isOn:$model.verifyBackup)
-                Text("Reads twice and compares the results.").font(.caption).foregroundStyle(.secondary)
             }
             Divider().opacity(0.4)
             VStack(alignment:.leading,spacing:8) {

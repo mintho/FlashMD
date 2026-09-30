@@ -27,8 +27,8 @@ public struct ROMContentAnalysis: Sendable, Codable, Equatable {
 
     public static func analyze(_ input: Data, headerBytes: Int?) throws -> ROMContentAnalysis {
         let data = Data(input)
-        guard data.count >= 512, data.count <= 0x400000 else {
-            throw FlashMDError.invalid("Content analysis requires a ROM range between 512 bytes and 4 MiB.")
+        guard data.count >= 512, data.count <= 0x1000000 else {
+            throw FlashMDError.invalid("Content analysis requires a ROM range between 512 bytes and 16 MiB.")
         }
         let last = data.lastIndex { $0 != 0xFF }
         let usedEnd = last.map { $0 + 1 } ?? 0
@@ -52,7 +52,8 @@ public struct ROMContentAnalysis: Sendable, Codable, Equatable {
 
     public static func read(device: any CartridgeDevice, cartridge: CartridgeSnapshot,
                             progress: ProgressHandler) throws -> ROMContentAnalysis {
-        let fresh = try device.inspect(profile:cartridge.profile).applying(cartridge.configurationOverride)
+        guard cartridge.canBackupROM else { throw FlashMDError.invalid(cartridge.mapperMessage ?? "Complete ROM unavailable.") }
+        let fresh = try device.inspect(profile:cartridge.profile,mapper:cartridge.mapperSelection).applying(cartridge.configurationOverride)
         guard fresh == cartridge else { throw FlashMDError.invalid("The cartridge changed before content analysis. Scan again.") }
         var data = Data()
         for offset in stride(from:0,to:cartridge.romReadLimit,by:32768) {
@@ -63,10 +64,18 @@ public struct ROMContentAnalysis: Sendable, Codable, Equatable {
             data.append(block)
             progress(.init(.readingROM,offset+length,cartridge.romReadLimit,detail:"Analyzing ROM contents"))
         }
-        let after = try device.inspect(profile:cartridge.profile).applying(cartridge.configurationOverride)
+        let after = try device.inspect(profile:cartridge.profile,mapper:cartridge.mapperSelection).applying(cartridge.configurationOverride)
         guard after == cartridge, hash(Data(data.prefix(512))) == cartridge.fingerprint else {
             throw FlashMDError.invalid("The cartridge changed during content analysis. Scan again.")
         }
-        return try analyze(data,headerBytes:cartridge.romSize?.bytes)
+        let analysis = try analyze(data,headerBytes:cartridge.romSize?.bytes)
+        // Mapper sizes describe the complete bank set; never trim banked exports.
+        if cartridge.mapper != .linear {
+            return .init(scannedBytes:analysis.scannedBytes,headerBytes:analysis.headerBytes,
+                lastNonErasedByte:analysis.lastNonErasedByte,trailingErasedBytes:analysis.trailingErasedBytes,
+                nonErasedBytesBeyondHeader:analysis.nonErasedBytesBeyondHeader,possibleMirrorBytes:analysis.possibleMirrorBytes,
+                suggestedBytes:cartridge.romReadLimit,sha256:analysis.sha256)
+        }
+        return analysis
     }
 }

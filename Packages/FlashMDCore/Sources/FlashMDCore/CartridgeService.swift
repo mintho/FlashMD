@@ -34,9 +34,9 @@ public actor ProgrammerController {
         guard !operationRunning else { throw FlashMDError.busy }
         device?.close(); device = nil; connectedPath = nil
     }
-    public func inspect(profile: CartridgeProfile, override: CartridgeConfiguration? = nil) throws -> CartridgeSnapshot {
+    public func inspect(profile: CartridgeProfile, override: CartridgeConfiguration? = nil, mapper: ROMMapper = .automatic) throws -> CartridgeSnapshot {
         guard !operationRunning, let device else { throw FlashMDError.invalid("Connect a programmer before inspecting a cartridge.") }
-        do { return try device.inspect(profile:profile).applying(override) }
+        do { return try device.inspect(profile:profile,mapper:mapper).applying(override) }
         catch { device.close(); self.device = nil; connectedPath = nil; throw error }
     }
     public func backup(_ request: BackupRequest, progress: @escaping ProgressHandler) throws -> OperationResult {
