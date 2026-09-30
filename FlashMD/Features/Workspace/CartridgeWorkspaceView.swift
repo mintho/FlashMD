@@ -398,8 +398,8 @@ struct CartridgeWorkspaceView: View {
                         VStack(spacing:10) {
                             ForEach(result.manifest.artifacts,id:\.filename) { artifact in
                                 HStack {
-                                    Image(systemName:artifact.filename == "game.bin" ? "gamecontroller" : "externaldrive").foregroundStyle(flashViolet)
-                                    Text(artifact.filename == "game.bin" ? "Game ROM · \(artifact.filename)" : "Save data · \(artifact.filename)").font(.callout.weight(.medium))
+                                    Image(systemName:artifact.isROM ? "gamecontroller" : "externaldrive").foregroundStyle(flashViolet)
+                                    Text(artifact.isROM ? "Game ROM · \(artifact.filename)" : "Save data · \(artifact.filename)").font(.callout.weight(.medium)).lineLimit(1).truncationMode(.middle)
                                     Spacer()
                                     Text(formatBytes(artifact.bytes)).font(.caption).foregroundStyle(.secondary)
                                     if artifact.verified { Image(systemName:"checkmark.seal").foregroundStyle(flashMint).help("Verified with a second read") }

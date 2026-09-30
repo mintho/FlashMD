@@ -2,13 +2,43 @@ import Foundation
 import Testing
 @testable import FlashMDCore
 
+@Test func backupNamesAreVisibleSafeAndBounded() {
+    #expect(OperationRunner.backupName(for:"  ../SONIC: THE HEDGEHOG/  ") == "SONIC THE HEDGEHOG")
+    #expect(OperationRunner.backupName(for:"... / : \u{0}\n") == "Untitled Cartridge")
+    #expect(OperationRunner.backupName(for:"Pokémon   —  日本") == "Pokémon — 日本")
+    #expect(OperationRunner.backupName(for:String(repeating:"日本",count:100)).utf8.count <= 120)
+}
+
+@Test func repeatedBackupsHaveSeparateFoldersAndPreserveContents() throws {
+    let device = MemoryDevice(), destination = try tempFolder()
+    defer { try? FileManager.default.removeItem(at:destination) }
+    let target = try device.inspect(profile:.automatic)
+    let request = try BackupRequest(cartridge:target,romBytes:65536,saveLayout:nil,verify:false,destination:destination)
+    let first = try OperationRunner.backup(device:device,request:request,progress:{_ in})
+    let second = try OperationRunner.backup(device:device,request:request,progress:{_ in})
+    #expect(first.folder != second.folder)
+    for result in [first,second] {
+        let folder = try #require(result.folder), artifact = try #require(result.manifest.artifacts.first)
+        #expect(try Data(contentsOf:folder.appendingPathComponent(artifact.filename)) == Data(device.rom.prefix(65536)))
+        #expect(try FileManager.default.contentsOfDirectory(atPath:folder.path).sorted() == ["TEST GAME.bin","manifest.json"])
+    }
+}
+
 @Test func backupExactSizeAndAtomicArtifacts() throws {
     let device = MemoryDevice(), destination = try tempFolder()
     defer { try? FileManager.default.removeItem(at:destination) }
     let target = try device.inspect(profile:.krikzz4M)
     let request = try BackupRequest(cartridge:target,romBytes:65537,saveLayout:target.saveLayout,verify:true,destination:destination)
     let result = try OperationRunner.backup(device:device,request:request,progress:{_ in})
-    let file = try Data(contentsOf:result.folder!.appendingPathComponent("game.bin"))
+    let folder = try #require(result.folder)
+    let rom = try #require(result.manifest.artifacts.first(where: { $0.isROM }))
+    let file = try Data(contentsOf:folder.appendingPathComponent(rom.filename))
+    #expect(folder.lastPathComponent.hasPrefix("TEST GAME — "))
+    #expect(result.manifest.artifacts.map(\.filename) == ["TEST GAME.bin","TEST GAME.srm"])
+    for artifact in result.manifest.artifacts {
+        let url = folder.appendingPathComponent(artifact.filename)
+        #expect(try url.resourceValues(forKeys:[.isHiddenKey]).isHidden == false)
+    }
     #expect(file.count == 65537); #expect(device.reads.contains(1)); #expect(result.manifest.artifacts.count == 2)
     #expect(result.manifest.artifacts.allSatisfy { $0.verified }); #expect(result.manifest.artifacts[0].sha256 == hash(file))
     #expect(FileManager.default.fileExists(atPath:result.folder!.appendingPathComponent("manifest.json").path))
@@ -21,7 +51,8 @@ import Testing
         Issue.record("Expected SRAM failure")
     } catch let failure as OperationFailure {
         #expect(failure.result.manifest.outcome == "partial"); #expect(failure.result.manifest.artifacts.count == 1)
-        #expect(FileManager.default.fileExists(atPath:failure.result.folder!.appendingPathComponent("game.bin").path))
+        let artifact = try #require(failure.result.manifest.artifacts.first)
+        #expect(FileManager.default.fileExists(atPath:failure.result.folder!.appendingPathComponent(artifact.filename).path))
     }
 }
 @Test func backupFailurePreventsDestructiveWrite() throws {

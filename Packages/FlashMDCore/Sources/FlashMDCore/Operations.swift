@@ -80,6 +80,7 @@ public struct BackupArtifact: Codable, Sendable, Equatable {
     public let sha256: String
     public let verified: Bool
     public let saveFormat: SaveFormat?
+    public var isROM: Bool { saveFormat == nil }
 }
 public struct TransferInput: Codable, Sendable {
     public let filename: String
@@ -118,7 +119,11 @@ public struct OperationFailure: LocalizedError, Sendable {
 
 public enum OperationRunner {
     public static func backup(device: any CartridgeDevice, request: BackupRequest, progress: ProgressHandler, allowBlank: Bool = false) throws -> OperationResult {
-        let folder = request.destination.appendingPathComponent("FlashMD-\(Int(Date().timeIntervalSince1970))-\(UUID().uuidString.prefix(8))", isDirectory: true)
+        let name = backupName(for:request.cartridge.title)
+        let date = DateFormatter()
+        date.locale = Locale(identifier:"en_US_POSIX"); date.dateFormat = "yyyy-MM-dd HH-mm-ss"
+        let folder = request.destination.appendingPathComponent("\(name) — \(date.string(from:Date())) — \(UUID().uuidString.prefix(8))", isDirectory: true)
+        let romFilename = name + ".bin", saveFilename = name + ".srm"
         var manifest = makeManifest(request.cartridge)
         manifest.configurationOverride = request.cartridge.configurationOverride
         do {
@@ -127,8 +132,8 @@ public enum OperationRunner {
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)
             if let count = request.romBytes {
                 let digest = try streamROMBackup(device, count: count, verify: request.verify,
-                    destination: folder.appendingPathComponent("game.bin"), progress: progress, allowBlank:allowBlank)
-                manifest.artifacts.append(.init(filename: "game.bin", bytes: count, sha256: digest, verified: request.verify, saveFormat: nil))
+                    destination: folder.appendingPathComponent(romFilename), progress: progress, allowBlank:allowBlank)
+                manifest.artifacts.append(.init(filename: romFilename, bytes: count, sha256: digest, verified: request.verify, saveFormat: nil))
                 manifest.phases.append("ROM backup completed")
                 try writeManifest(manifest, folder: folder)
             }
@@ -139,8 +144,8 @@ public enum OperationRunner {
                     try compare(try layout.pack(raw), try layout.pack(second))
                 }
                 let data = request.saveFormat == .raw ? raw : try layout.pack(raw)
-                try publish(data, to: folder.appendingPathComponent("save.srm"))
-                manifest.artifacts.append(.init(filename: "save.srm", bytes: data.count, sha256: hash(data), verified: request.verify, saveFormat: request.saveFormat))
+                try publish(data, to: folder.appendingPathComponent(saveFilename))
+                manifest.artifacts.append(.init(filename: saveFilename, bytes: data.count, sha256: hash(data), verified: request.verify, saveFormat: request.saveFormat))
                 manifest.phases.append("SRAM backup completed")
             }
             manifest.outcome = "completed"; try writeManifest(manifest, folder: folder)
@@ -242,7 +247,7 @@ public enum OperationRunner {
         }
         try Task.checkCancellation()
         try file.close()
-        try FileManager.default.moveItem(at: temporary, to: destination)
+        try publishFile(temporary, to: destination)
         return digest.finalize().map { String(format: "%02x", $0) }.joined()
     }
     private static func readSave(_ device: any CartridgeDevice, layout: SRAMLayout, progress: ProgressHandler) throws -> Data {
@@ -272,7 +277,28 @@ public enum OperationRunner {
         let temporary = destination.deletingLastPathComponent().appendingPathComponent(".\(UUID().uuidString).partial")
         defer { try? FileManager.default.removeItem(at: temporary) }
         try data.write(to: temporary, options: .atomic)
+        try publishFile(temporary, to: destination)
+    }
+    private static func publishFile(_ temporary: URL, to destination: URL) throws {
+        // macOS can mark a dot-prefixed temporary file with UF_HIDDEN.
+        // A rename preserves that flag, so clear it before publishing the finished file.
+        var visible = temporary, values = URLResourceValues()
+        values.isHidden = false
+        try visible.setResourceValues(values)
         try FileManager.default.moveItem(at: temporary,to: destination)
+    }
+    static func backupName(for title: String) -> String {
+        let invalid = CharacterSet(charactersIn:"/\\:*?\"<>|").union(.controlCharacters)
+        let cleaned = title.precomposedStringWithCanonicalMapping.unicodeScalars.map {
+            invalid.contains($0) ? " " : String($0)
+        }.joined().split(whereSeparator: { $0.isWhitespace }).joined(separator:" ")
+        var name = ""
+        for character in cleaned {
+            guard name.utf8.count + String(character).utf8.count <= 120 else { break }
+            name.append(character)
+        }
+        name = name.trimmingCharacters(in:CharacterSet(charactersIn:" .-"))
+        return name.isEmpty ? "Untitled Cartridge" : name
     }
     private static func makeManifest(_ cartridge: CartridgeSnapshot) -> OperationManifest {
         .init(schemaVersion:1,date:Date(),device:cartridge.identity,cartridgeTitle:cartridge.title,profile:cartridge.profile,rawHeader:cartridge.rawHeader,romSize:cartridge.romSize,flashCapacity:cartridge.flashCapacity,saveLayout:cartridge.saveLayout,outcome:"in progress",artifacts:[],phases:[],error:nil)
