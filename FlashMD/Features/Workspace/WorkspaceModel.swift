@@ -66,7 +66,7 @@ struct SelectedFile: Sendable, Identifiable {
     var backupSRAM = true
     var writeROM = true { didSet { invalidateReview() } }
     var writeSRAM = false { didSet { invalidateReview() } }
-    var clearUnusedROM = false { didSet { invalidateReview() } }
+    var clearUnusedROM = true { didSet { invalidateReview() } }
     var backupBeforeWrite = true { didSet { UserDefaults.standard.set(backupBeforeWrite,forKey:"backupBeforeWrite"); invalidateReview() } }
     var verifyBackup = true { didSet { UserDefaults.standard.set(verifyBackup,forKey:"verifyBackup") } }
     var saveFormat: SaveFormat = .raw { didSet { invalidateReview() } }
@@ -237,7 +237,7 @@ struct SelectedFile: Sendable, Identifiable {
         do {
             if writeROM, selectedROM == nil { throw FlashMDError.invalid("Choose the ROM to write.") }
             if writeSRAM, selectedSRAM == nil { throw FlashMDError.invalid("Choose a separate save file to restore.") }
-            let destination = backupBeforeWrite ? chooseDestination(prompt:"Choose pre-write backup destination") : nil
+            let destination = backupBeforeWrite ? chooseDestination(prompt:"Choose cartridge backup folder") : nil
             if backupBeforeWrite, destination == nil { return }
             reviewPlan = try WritePlan(target:cartridge,image:writeROM ? selectedROM?.image : nil,romName:selectedROM?.name,
                 save:writeSRAM ? selectedSRAM?.data : nil,saveName:selectedSRAM?.name,format:saveFormat,backupDestination:destination,clearUnusedROM:clearUnusedROM)

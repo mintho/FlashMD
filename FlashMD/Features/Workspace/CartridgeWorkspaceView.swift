@@ -267,7 +267,7 @@ struct CartridgeWorkspaceView: View {
                 }
             }
             HStack {
-                Text(model.backupBeforeWrite ? "A verified backup is made before writing." : "Pre-write backup is off.").font(.caption).foregroundStyle(.secondary)
+                Text(model.backupBeforeWrite ? (model.writeROM ? "The current cartridge ROM and available saves are backed up first." : "Current cartridge saves are backed up first.") : "Backup before writing is off.").font(.caption).foregroundStyle(.secondary)
                 Spacer()
                 Button("Review Write…") { model.prepareWrite() }.buttonStyle(FlashActionStyle()).disabled(!model.canReviewWrite)
             }
@@ -377,9 +377,10 @@ struct CartridgeWorkspaceView: View {
                 Picker("Save file format",selection:$model.saveFormat) { ForEach(SaveFormat.allCases) { Text($0.displayName).tag($0) } }
                 Text("FlashKit raw includes both bus lanes. Packed stores only active save bytes; file lengths are checked before restoration.").font(.caption).foregroundStyle(.secondary)
                 Toggle("Verify backups with a second read",isOn:$model.verifyBackup)
-                Toggle("Back up affected contents before writing",isOn:$model.backupBeforeWrite)
-                Toggle("Clear remaining ROM space when writing",isOn:$model.clearUnusedROM)
-                Text("Erases the complete accessible ROM range and fills space after the new file with FF. Removes old game remnants; existing SRAM is preserved unless you choose a save file to replace it.").font(.caption).foregroundStyle(.secondary)
+                Toggle("Back up cartridge before writing",isOn:$model.backupBeforeWrite)
+                Text("Saves the cartridge's current ROM and SRAM in a folder you choose, then verifies them before writing. Save-only writes back up SRAM.").font(.caption).foregroundStyle(.secondary)
+                Toggle("Clear unused cartridge ROM when writing",isOn:$model.clearUnusedROM)
+                Text("Removes old game data beyond the new ROM. Your ROM file is unchanged; this does not erase SRAM saves.").font(.caption).foregroundStyle(.secondary)
             }
             Divider().opacity(0.4)
             VStack(alignment:.leading,spacing:10) {
