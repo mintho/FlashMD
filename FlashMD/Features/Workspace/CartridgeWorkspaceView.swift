@@ -151,7 +151,8 @@ struct CartridgeWorkspaceView: View {
             HStack(spacing:0) {
                 metric("ROM CAPACITY",cartridge.flashCapacity.map { formatBytes($0.bytes) } ?? "Unknown",note:cartridge.isDemo ? "Sample data" : (cartridge.configurationOverride != nil || cartridge.profile != .automatic ? "Manual configuration" : "Automatically configured"))
                 Rectangle().fill(Color.primary.opacity(0.1)).frame(width:1,height:42)
-                metric("INSTALLED GAME",cartridge.romSize.map { formatBytes($0.bytes) } ?? "No valid header",note:"From the game header")
+                metric("HEADER ROM SIZE",cartridge.romSize.map { formatBytes($0.bytes) } ?? "No valid header",note:"Declared by the game; may be incomplete")
+                    .help("The game header declares this size; it is not a measurement of all ROM contents. Automatic backup reads the complete accessible ROM range.")
                 Rectangle().fill(Color.primary.opacity(0.1)).frame(width:1,height:42)
                 metric("SAVE MEMORY",cartridge.saveLayout.map { formatBytes($0.activeBytes) + " SRAM" } ?? "None declared",note:cartridge.saveLayout == nil ? "Override in Advanced Options" : (cartridge.configurationOverride == nil && cartridge.profile == .automatic ? "From the game header" : "Manual configuration"))
             }.padding(.vertical,compact ? 12 : 18).background(Color.primary.opacity(scheme == .dark ? 0.035 : 0.025),in:RoundedRectangle(cornerRadius:18))
@@ -326,11 +327,11 @@ struct CartridgeWorkspaceView: View {
             VStack(alignment:.leading,spacing:10) {
                 Text("Backup and verification").font(.headline)
                 Picker("ROM backup length",selection:$model.backupLength) { ForEach(ROMBackupLength.allCases) { Text($0.title).tag($0) } }
-                Text("Automatic uses the game header's size. If the header is missing, it uses the configured accessible ROM capacity. A full dump includes unused ROM space.").font(.caption).foregroundStyle(.secondary)
+                Text("Automatic backs up the complete accessible ROM range, including unused space. Some game headers underreport the size: Header size only can omit game data. Use a custom byte count when you know the cartridge mapping.").font(.caption).foregroundStyle(.secondary)
                 if model.backupLength == .custom {
                     LabeledContent("ROM bytes to read") { TextField("2097152",text:$model.forcedROMSize).textFieldStyle(.roundedBorder).accessibilityLabel("ROM bytes to read") }
                     HStack {
-                        Button("Use Game Size") { model.forcedROMSize = model.cartridge?.romSize.map { String($0.bytes) } ?? "" }.disabled(model.cartridge?.romSize == nil)
+                        Button("Use Header Size") { model.forcedROMSize = model.cartridge?.romSize.map { String($0.bytes) } ?? "" }.disabled(model.cartridge?.romSize == nil)
                         Button("Use Capacity") { model.forcedROMSize = model.cartridge?.flashCapacity.map { String($0.bytes) } ?? "" }.disabled(model.cartridge?.flashCapacity == nil)
                     }
                     Text("Enter a whole byte count, for example 2097152 for 2 MiB. It must fit within accessible capacity; nothing is silently truncated.").font(.caption).foregroundStyle(.secondary)
@@ -477,7 +478,7 @@ struct MetadataView: View {
                 row("Copyright",metadata.copyright)
                 row("Year",metadata.copyrightYear ?? "Unknown")
                 row("Regions",metadata.regions.joined(separator:" · "))
-                row("Game ROM size",metadata.declaredROMBytes.map(formatBytes) ?? "Unknown")
+                row("Declared ROM size (header)",metadata.declaredROMBytes.map(formatBytes) ?? "Unknown")
                 row("Declared save",metadata.saveLayout.map { "\(formatBytes($0.activeBytes)) · \($0.lane.map { $0 == 1 ? "odd lane" : "even lane" } ?? "16-bit")" } ?? metadata.saveWarning ?? "None")
                 row("Input support",metadata.peripherals)
                 row("Header checksum",String(format:"%04X",metadata.storedChecksum))

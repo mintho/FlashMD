@@ -5,9 +5,9 @@ import AppKit
 import IOKit.pwr_mgt
 
 enum ROMBackupLength: String, CaseIterable, Identifiable {
-    case automatic, full, custom
+    case automatic, header, custom
     var id: Self { self }
-    var title: String { switch self { case .automatic: "Game size (automatic)"; case .full: "All accessible ROM"; case .custom: "Custom byte count" } }
+    var title: String { switch self { case .automatic: "Automatic · complete ROM range"; case .header: "Header size only"; case .custom: "Custom byte count" } }
 }
 struct SelectedFile: Sendable, Identifiable {
     let id = UUID()
@@ -95,8 +95,8 @@ struct SelectedFile: Sendable, Identifiable {
     }
     var backupSizeDescription: String {
         switch backupLength {
-        case .automatic: return (cartridge?.romSize ?? cartridge?.flashCapacity).map { formatBytes($0.bytes) } ?? "Size not yet known"
-        case .full: return cartridge?.flashCapacity.map { formatBytes($0.bytes) + " · full range" } ?? "Capacity unknown"
+        case .automatic: return cartridge.map { formatBytes($0.romReadLimit) + " · complete ROM range" } ?? "Size not yet known"
+        case .header: return cartridge?.romSize.map { formatBytes($0.bytes) + " · header only" } ?? "No valid header size"
         case .custom: return Int(forcedROMSize).map { formatBytes($0) + " · custom" } ?? "Set size in Advanced Options"
         }
     }
@@ -204,8 +204,8 @@ struct SelectedFile: Sendable, Identifiable {
             if !backupROM { count = nil }
             else {
                 switch backupLength {
-                case .automatic: count = cartridge.romSize?.bytes ?? cartridge.flashCapacity?.bytes
-                case .full: count = cartridge.flashCapacity?.bytes
+                case .automatic: count = cartridge.romReadLimit
+                case .header: count = cartridge.romSize?.bytes
                 case .custom: count = Int(override)
                 }
             }
