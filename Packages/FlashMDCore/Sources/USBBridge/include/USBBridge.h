@@ -3,7 +3,8 @@
 #include <stdint.h>
 #include <stddef.h>
 typedef struct FMUSB FMUSB;
-// Only enumerates matching USB interfaces; discovery never sends device commands.
+// Enumerates matching USB devices, including unconfigured ones. Discovery never
+// opens a device or sends commands. Configuration is selected only when connecting.
 size_t fm_usb_discover(uint32_t *locations, size_t capacity);
 FMUSB *fm_usb_open(uint32_t location, int32_t *error);
 int32_t fm_usb_write(FMUSB *device, const uint8_t *bytes, uint32_t count, uint32_t timeout);
