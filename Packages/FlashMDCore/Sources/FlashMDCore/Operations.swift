@@ -142,7 +142,7 @@ public struct OperationFailure: LocalizedError, Sendable {
 
 public enum OperationRunner {
     public static func backup(device: any CartridgeDevice, request: BackupRequest, progress: ProgressHandler, allowBlank: Bool = false) throws -> OperationResult {
-        let name = backupName(for:request.cartridge.metadata?.title ?? "Cartridge Backup",regions:request.cartridge.regions)
+        let name = backupName(for:request.cartridge.metadata?.title ?? "Cartridge Backup",regions:request.cartridge.regions,revision:request.cartridge.metadata?.revision)
         let date = DateFormatter()
         date.locale = Locale(identifier:"en_US_POSIX"); date.dateFormat = "yyyy-MM-dd HH-mm-ss"
         let folder = request.destination.appendingPathComponent("\(name) — \(date.string(from:Date())) — \(UUID().uuidString.prefix(8))", isDirectory: true)
@@ -341,7 +341,7 @@ public enum OperationRunner {
         visible = destination
         try visible.setResourceValues(values)
     }
-    static func backupName(for title: String, regions: [String] = []) -> String {
+    static func backupName(for title: String, regions: [String] = [], revision: Int? = nil) -> String {
         let invalid = CharacterSet(charactersIn:"/\\:*?\"<>|").union(.controlCharacters)
         let cleaned = title.precomposedStringWithCanonicalMapping.unicodeScalars.map {
             invalid.contains($0) ? " " : String($0)
@@ -361,7 +361,9 @@ public enum OperationRunner {
         let regionSet = Set(regions)
         let tags = [("Japan", "JP"), ("USA", "US"), ("Europe", "EU")]
             .compactMap { regionSet.contains($0.0) ? $0.1 : nil }
-        let suffix = tags.isEmpty ? "" : " (\(tags.joined(separator:", ")))"
+        let regionSuffix = tags.isEmpty ? "" : " (\(tags.joined(separator:", ")))"
+        let revisionSuffix = revision.flatMap { (1...99).contains($0) ? " [rev \($0)]" : nil } ?? ""
+        let suffix = regionSuffix + revisionSuffix
         var name = ""
         for character in titleCase {
             guard name.utf8.count + String(character).utf8.count + suffix.utf8.count <= 120 else { break }

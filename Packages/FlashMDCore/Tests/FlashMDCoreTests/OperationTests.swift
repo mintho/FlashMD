@@ -15,6 +15,12 @@ import Testing
     let bounded = OperationRunner.backupName(for:String(repeating:"日本",count:100),regions:["Europe", "Japan", "USA"])
     #expect(bounded.utf8.count <= 120)
     #expect(bounded.hasSuffix(" (JP, US, EU)"))
+    #expect(OperationRunner.backupName(for:"SOLEIL",regions:["Europe"],revision:0) == "Soleil (EU)")
+    #expect(OperationRunner.backupName(for:"SOLEIL",regions:["Europe"],revision:1) == "Soleil (EU) [rev 1]")
+    #expect(OperationRunner.backupName(for:"SOLEIL",revision:2) == "Soleil [rev 2]")
+    let revised = OperationRunner.backupName(for:String(repeating:"日本",count:100),regions:["Europe", "Japan", "USA"],revision:99)
+    #expect(revised.utf8.count <= 120)
+    #expect(revised.hasSuffix(" (JP, US, EU) [rev 99]"))
 }
 
 @Test func repeatedBackupsHaveSeparateFoldersAndPreserveContents() throws {
@@ -34,6 +40,7 @@ import Testing
 
 @Test func backupExactSizeAndAtomicArtifacts() throws {
     let device = MemoryDevice(), destination = try tempFolder()
+    device.rom.replaceSubrange(0x180..<0x18E,with:Data("GM 00000000-02".utf8))
     defer { try? FileManager.default.removeItem(at:destination) }
     let target = try device.inspect(profile:.krikzz4M)
     let request = try BackupRequest(cartridge:target,romBytes:65537,saveLayout:target.saveLayout,verify:true,destination:destination)
@@ -41,8 +48,8 @@ import Testing
     let folder = try #require(result.folder)
     let rom = try #require(result.manifest.artifacts.first(where: { $0.isROM }))
     let file = try Data(contentsOf:folder.appendingPathComponent(rom.filename))
-    #expect(folder.lastPathComponent.hasPrefix("Test Game (JP, US, EU) — "))
-    #expect(result.manifest.artifacts.map(\.filename) == ["Test Game (JP, US, EU).bin","Test Game (JP, US, EU).srm"])
+    #expect(folder.lastPathComponent.hasPrefix("Test Game (JP, US, EU) [rev 2] — "))
+    #expect(result.manifest.artifacts.map(\.filename) == ["Test Game (JP, US, EU) [rev 2].bin","Test Game (JP, US, EU) [rev 2].srm"])
     for artifact in result.manifest.artifacts {
         let url = folder.appendingPathComponent(artifact.filename)
         #expect(try url.resourceValues(forKeys:[.isHiddenKey]).isHidden == false)

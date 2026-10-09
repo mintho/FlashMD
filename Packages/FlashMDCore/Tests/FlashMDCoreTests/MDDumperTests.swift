@@ -170,15 +170,21 @@ func mdDumperBankQualificationAndRestoration(mode: Int) throws {
     }
 }
 
-@Test func mdDumperVerifiedSRAMBackupPublishesCompatibleFiles() throws {
-    let wire = DumperWire(), device = try wire.device()
+@Test(arguments:[0,1,2]) func mdDumperVerifiedBackupPublishesCompatibleFiles(revision:Int) throws {
+    let wire = DumperWire()
+    wire.rom.replaceSubrange(0x180..<0x18E,with:Data("GM 00000000-0\(revision)".utf8))
+    let device = try wire.device()
     let snapshot = try device.inspect(profile:.automatic), layout = try #require(snapshot.saveLayout)
     let folder = try tempFolder(); defer { try? FileManager.default.removeItem(at:folder) }
-    let request = try BackupRequest(cartridge:snapshot,romBytes:nil,saveLayout:layout,saveFormat:.packed,verify:true,destination:folder)
+    let request = try BackupRequest(cartridge:snapshot,romBytes:65536,saveLayout:layout,saveFormat:.packed,verify:true,destination:folder)
     let result = try OperationRunner.backup(device:device,request:request,progress:{ _ in })
-    let artifact = try #require(result.manifest.artifacts.first)
-    #expect(artifact.verified)
+    let artifact = try #require(result.manifest.artifacts.first(where: { !$0.isROM }))
+    #expect(result.manifest.artifacts.allSatisfy { $0.verified })
     let outputFolder = try #require(result.folder)
+    let stem = "Test Game (JP, US, EU)" + (revision == 0 ? "" : " [rev \(revision)]")
+    #expect(outputFolder.lastPathComponent.hasPrefix(stem + " — "))
+    #expect(result.manifest.artifacts.map(\.filename) == [stem + ".bin",stem + ".srm"])
+    #expect(try Data(contentsOf:outputFolder.appendingPathComponent(stem + ".bin")) == Data(wire.rom.prefix(65536)))
     #expect(try Data(contentsOf:outputFolder.appendingPathComponent(artifact.filename)) == Data(wire.save.prefix(layout.activeBytes)))
     #expect(!wire.commands.contains { [UInt8(0x13),0x14,0x15].contains($0[0]) })
 }

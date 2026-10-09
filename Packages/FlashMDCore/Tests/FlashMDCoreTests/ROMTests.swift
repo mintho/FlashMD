@@ -9,6 +9,19 @@ import Foundation
     #expect(image.checksum == image.metadata.storedChecksum); #expect(image.metadata.rawHeader.count == 256)
     #expect(image.metadata.saveLayout?.windowBytes == 16384); #expect(image.metadata.saveLayout?.activeBytes == 8192)
 }
+@Test func metadataRevisionRequiresARecognizableProductCode() throws {
+    let cases: [(String, Int?)] = [
+        ("GM 00000000-00",0), ("GM 00000000-01",1), ("GM T-574023-02",2),
+        ("GM 00000000-99",99), ("GM 00000000",nil), ("GM 00000000-1",nil),
+        ("GM 00000000-A1",nil), ("GM 000000-1.11",nil), ("VERSION 01",nil), ("",nil)
+    ]
+    for (code, expected) in cases {
+        var data = fixtureROM()
+        data.replaceSubrange(0x180..<0x18E,with:Data(repeating:32,count:14))
+        data.replaceSubrange(0x180..<0x180+code.utf8.count,with:Data(code.utf8))
+        #expect(try ROMMetadata.parse(data).revision == expected)
+    }
+}
 @Test(arguments:[0,1,511]) func truncatedInputs(length:Int) { #expect(throws:(any Error).self) { try ROMImage(data:Data(count:length)) } }
 @Test func invalidImages() {
     #expect(throws:(any Error).self) { try ROMImage(data:Data(repeating:0xFF,count:65536)) }

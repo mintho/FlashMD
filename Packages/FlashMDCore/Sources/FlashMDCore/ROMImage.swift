@@ -78,6 +78,10 @@ public struct ROMMetadata: Codable, Sendable, Equatable {
     public let saveWarning: String?
     public let rawHeader: Data
     public var title: String { internationalTitle.isEmpty ? (domesticTitle.isEmpty ? "Untitled cartridge" : domesticTitle) : internationalTitle }
+    public var revision: Int? {
+        guard productCode.range(of:"^(GM|AI|OS|BR) [A-Za-z0-9-]+-[0-9]{2}$",options:.regularExpression) != nil else { return nil }
+        return Int(productCode.suffix(2))
+    }
 
     public static func parse(_ data: Data) throws -> ROMMetadata {
         guard data.count >= 512 else { throw FlashMDError.invalid("The ROM is too short to contain a Mega Drive header.") }
