@@ -134,26 +134,29 @@ func mdDumperBankQualificationAndRestoration(mode: Int) throws {
     } else { #expect(throws:FlashMDError.self) { try device.readROM(offset:0,count:512) } }
 }
 
-@Test func mdDumperKnownFlashUsesWholeChipPlanAndExplicitAlgorithms() throws {
+@Test func mdDumperScanNeverQueriesFlashIDsOrEnablesUnqualifiedROMWrites() throws {
     let wire = DumperWire(); wire.flashID = (0x20,0x57)
     wire.rom.replaceSubrange(0..<65536,with:fixtureROM(save:false))
     let device = try wire.device(), snapshot = try device.inspect(profile:.automatic)
-    #expect(snapshot.canWrite)
-    let geometry = try #require(snapshot.geometry)
-    #expect(geometry.sectors.count == 1 && geometry.sectors[0].bytes == 0x400000)
+    #expect(!snapshot.canWrite && snapshot.geometry == nil)
+    #expect(!wire.commands.contains { [UInt8(0x18),0x14,0x15,0x65].contains($0[0]) })
     let image = try ROMImage(data:fixtureROM(save:false))
-    #expect(throws:FlashMDError.self) { try WritePlan(target:snapshot,image:image,romName:"test",save:nil,saveName:nil,format:.packed,backupDestination:nil,clearUnusedROM:false) }
-    let plan = try WritePlan(target:snapshot,image:image,romName:"test",save:nil,saveName:nil,format:.packed,backupDestination:nil,clearUnusedROM:true)
-    #expect(plan.rom?.count == 0x400000)
-    try device.erase(sector:geometry.sectors[0])
-    let data = Data((0..<128).map { UInt8($0) })
-    try device.program(offset:0x100,data:data)
-    #expect(try device.readROM(offset:0x100,count:128) == data)
-    #expect(wire.commands.first { $0[0] == 0x15 }?[1] == 2)
-    #expect(wire.commands.first { $0[0] == 0x65 }?[4] == 2)
-    #expect(wire.commands.filter { $0[0] == 0x14 }.map { $0[4] } == [54,54,20])
-    let json = try JSONEncoder().encode(geometry)
-    #expect(try JSONDecoder().decode(FlashGeometry.self,from:json) == geometry)
+    #expect(throws:FlashMDError.self) { try WritePlan(target:snapshot,image:image,romName:"test",save:nil,saveName:nil,format:.packed,backupDestination:nil,clearUnusedROM:true) }
+    #expect(throws:FlashMDError.self) { try device.program(offset:0,data:Data([1,2])) }
+}
+
+@Test func mdDumperFlashIdentifierDataCannotBecomeABackup() throws {
+    let wire = DumperWire()
+    let chipIDs = Data([0,1,0x22,0x7e]) + Data(repeating:0,count:28)
+    wire.rom = Data(repeating:0,count:0x400000)
+    for offset in stride(from:0,to:512,by:32) { wire.rom.replaceSubrange(offset..<offset+32,with:chipIDs) }
+    let device = try wire.device(), snapshot = try device.inspect(profile:.automatic)
+    #expect(snapshot.title == "Unreadable cartridge" && snapshot.metadata == nil)
+    #expect(!snapshot.canBackupROM && !snapshot.canRestoreSave && snapshot.flashCapacity == nil)
+    #expect(snapshot.mapperMessage?.contains("unplug USB") == true)
+    #expect(throws:FlashMDError.self) { try device.readROM(offset:0,count:512) }
+    #expect(throws:FlashMDError.self) { try BackupRequest(cartridge:snapshot,romBytes:512,saveLayout:nil,verify:true,destination:URL(fileURLWithPath:"/tmp")) }
+    #expect(wire.commands.allSatisfy { [UInt8(0x10),0x11].contains($0[0]) })
 }
 
 @Test func mdDumperUnknownOrLegacyFlashNeverEnablesROMWrites() throws {

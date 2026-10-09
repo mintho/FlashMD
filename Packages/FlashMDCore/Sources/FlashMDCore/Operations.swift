@@ -142,7 +142,7 @@ public struct OperationFailure: LocalizedError, Sendable {
 
 public enum OperationRunner {
     public static func backup(device: any CartridgeDevice, request: BackupRequest, progress: ProgressHandler, allowBlank: Bool = false) throws -> OperationResult {
-        let name = backupName(for:request.cartridge.title)
+        let name = backupName(for:request.cartridge.metadata?.title ?? "Cartridge Backup")
         let date = DateFormatter()
         date.locale = Locale(identifier:"en_US_POSIX"); date.dateFormat = "yyyy-MM-dd HH-mm-ss"
         let folder = request.destination.appendingPathComponent("\(name) — \(date.string(from:Date())) — \(UUID().uuidString.prefix(8))", isDirectory: true)

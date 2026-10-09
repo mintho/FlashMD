@@ -13,6 +13,7 @@ public final class MDDumperDevice: CartridgeDevice, @unchecked Sendable {
     private var readLimit = 0x400000
     private var physicalReadLimit = 0x400000
     private var unavailable = false
+    private var unavailableMessage: String?
     private var flash: MDDumperFlash?
     private var algorithmSelected = false
     public init(transport: any ByteTransport, location: String) throws {
@@ -82,7 +83,7 @@ public final class MDDumperDevice: CartridgeDevice, @unchecked Sendable {
         try inspect(profile:profile,mapper:.automatic)
     }
     public func inspect(profile: CartridgeProfile, mapper selection: ROMMapper) throws -> CartridgeSnapshot {
-        try reset(); bankedReader = nil; unavailable = false; flash = nil
+        try reset(); bankedReader = nil; unavailable = false; unavailableMessage = nil; flash = nil
         let header = try readBus(offset:0,count:512)
         let valid = Data(header[0x100..<0x104]) == Data("SEGA".utf8)
         let metadata = valid ? try? ROMMetadata.parse(header) : nil
@@ -104,39 +105,42 @@ public final class MDDumperDevice: CartridgeDevice, @unchecked Sendable {
             }
             unavailable = !qualified; readLimit = size ?? 0
             let message = qualified ? "\(mapper.displayName) · bank switching verified. SRAM access and writing are unavailable." : "This cartridge’s bank switching is not supported by this reader. ROM backup is unavailable."
+            unavailableMessage = qualified ? nil : message
             return .init(title:metadata?.title ?? "Unknown cartridge",regions:metadata?.regions ?? [],
                 romSize:metadata?.declaredROMBytes.map { .init(bytes:$0,source:.header) },flashCapacity:nil,rawSaveWindow:nil,
                 metadata:metadata,identity:identity,fingerprint:hash(header),warning:message,profile:profile,
                 mapper:mapper,mapperSelection:selection,romAccess:qualified ? .banked : .unavailable,
                 mappedROMBytes:size,mapperMessage:message,readerKind:.mdDumper,saveWriteSupported:false)
         }
-        // ID query is only made for linear cartridges; it must leave ROM mode restored.
-        try send(packet(0x18)); let id = try reply()
-        let candidate = MDDumperFlash.lookup(manufacturer:id[1],chip:id[3])
-        guard try readBus(offset:0,count:512) == header else {
-            throw FlashMDError.invalid("MD Dumper did not return to ROM read mode. Unplug USB before moving the cartridge.")
+        // Firmware 2.0 on the tested STM32F1 board leaves S29GL064N flash
+        // in autoselect mode after 0x18. Never query flash IDs during a scan or
+        // backup. ROM programming stays disabled until safe identification and
+        // cleanup have been qualified on hardware.
+        guard valid, let metadata else {
+            unavailable = true; readLimit = 0; physicalReadLimit = 0x400000
+            let message = "Game data could not be read. Turn the reader off, unplug USB, then reconnect with the cartridge still inserted."
+            unavailableMessage = message
+            return .init(title:"Unreadable cartridge",regions:[],romSize:nil,flashCapacity:nil,rawSaveWindow:nil,
+                identity:identity,fingerprint:hash(header),warning:message,profile:profile,
+                rawHeader:Data(header[0x100..<0x200]),mapperSelection:selection,romAccess:.unavailable,
+                mapperMessage:message,readerKind:.mdDumper,saveWriteSupported:false)
         }
         // Published SRAM commands expose the odd lane only, not a two-lane bus dump.
-        let declared = profile == .automatic ? metadata?.saveLayout : profile.saveLayout
+        let declared = profile == .automatic ? metadata.saveLayout : profile.saveLayout
         let layout = declared?.lane == 1 ? declared : nil
-        flash = board == 0 ? nil : candidate
-        let physical = candidate?.capacity
-        physicalReadLimit = min(physical ?? 0x400000,0x400000)
-        readLimit = min(profile.romCapacityLimit ?? 0x400000,physical ?? 0x400000,layout?.base ?? 0x400000)
-        // Chip erase affects the entire flash, so only expose programming if all of
-        // that chip is reachable and does not overlap the SRAM window.
-        let geometry = flash.flatMap { $0.capacity == readLimit ? $0.geometry : nil }
+        physicalReadLimit = 0x400000
+        readLimit = min(profile.romCapacityLimit ?? 0x400000,layout?.base ?? 0x400000)
         let warning = declared != nil && layout == nil ? "This reader supports odd-lane SRAM only. ROM backup is available." :
-            geometry == nil ? "ROM backup is available. ROM writing is not supported for this cartridge configuration." : nil
-        return .init(title:metadata?.title ?? "Blank or invalid game header",regions:metadata?.regions ?? [],
-            romSize:metadata?.declaredROMBytes.map { .init(bytes:$0,source:.header) },
-            flashCapacity:.init(bytes:readLimit,source:physical == readLimit ? .hardware : .estimated),
+            "ROM backup is available. ROM writing is awaiting validation for this reader."
+        return .init(title:metadata.title,regions:metadata.regions,
+            romSize:metadata.declaredROMBytes.map { .init(bytes:$0,source:.header) },
+            flashCapacity:.init(bytes:readLimit,source:.estimated),
             rawSaveWindow:layout.map { .init(bytes:$0.windowBytes,source:.header) },metadata:metadata,
-            geometry:geometry,saveLayout:layout,identity:identity,fingerprint:hash(header),warning:warning,
+            geometry:nil,saveLayout:layout,identity:identity,fingerprint:hash(header),warning:warning,
             profile:profile,mapperSelection:selection,readerKind:.mdDumper,saveWriteSupported:layout?.activeBytes.isMultiple(of:32) == true)
     }
     public func readROM(offset: Int, count: Int) throws -> Data {
-        guard !unavailable else { throw FlashMDError.invalid("This cartridge’s bank switching is not supported by this reader. ROM backup is unavailable.") }
+        guard !unavailable else { throw FlashMDError.invalid(unavailableMessage ?? "Game data could not be read. Scan again.") }
         if let bankedReader { return try bankedReader.readROM(offset:offset,count:count) }
         guard offset >= 0, count >= 0, offset <= physicalReadLimit, count <= physicalReadLimit-offset else { throw FlashMDError.invalid("ROM read exceeds cartridge capacity.") }
         try Task.checkCancellation()

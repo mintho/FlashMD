@@ -33,3 +33,6 @@ xcuserdata/
 *.sav
 *.smd
 *.gen
+
+# Local cartridge backups
+/Backups/
