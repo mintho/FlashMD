@@ -3,10 +3,18 @@ import Testing
 @testable import FlashMDCore
 
 @Test func backupNamesAreVisibleSafeAndBounded() {
-    #expect(OperationRunner.backupName(for:"  ../SONIC: THE HEDGEHOG/  ") == "SONIC THE HEDGEHOG")
+    #expect(OperationRunner.backupName(for:"  ../SONIC: THE HEDGEHOG/  ") == "Sonic the Hedgehog")
     #expect(OperationRunner.backupName(for:"... / : \u{0}\n") == "Untitled Cartridge")
     #expect(OperationRunner.backupName(for:"Pokémon   —  日本") == "Pokémon — 日本")
     #expect(OperationRunner.backupName(for:String(repeating:"日本",count:100)).utf8.count <= 120)
+    #expect(OperationRunner.backupName(for:"SOLEIL",regions:["Europe"]) == "Soleil (EU)")
+    #expect(OperationRunner.backupName(for:"PIER SOLAR AND THE GREAT ARCHITECTS",regions:["USA"]) == "Pier Solar and the Great Architects (US)")
+    #expect(OperationRunner.backupName(for:"THE LEGEND OF SONIC",regions:["Japan"]) == "The Legend of Sonic (JP)")
+    #expect(OperationRunner.backupName(for:"SUPER STREET FIGHTER II",regions:["Europe", "Japan", "USA", "Europe"]) == "Super Street Fighter II (JP, US, EU)")
+    #expect(OperationRunner.backupName(for:"SONIC'S ADVENTURE",regions:["Unknown"]) == "Sonic's Adventure")
+    let bounded = OperationRunner.backupName(for:String(repeating:"日本",count:100),regions:["Europe", "Japan", "USA"])
+    #expect(bounded.utf8.count <= 120)
+    #expect(bounded.hasSuffix(" (JP, US, EU)"))
 }
 
 @Test func repeatedBackupsHaveSeparateFoldersAndPreserveContents() throws {
@@ -20,7 +28,7 @@ import Testing
     for result in [first,second] {
         let folder = try #require(result.folder), artifact = try #require(result.manifest.artifacts.first)
         #expect(try Data(contentsOf:folder.appendingPathComponent(artifact.filename)) == Data(device.rom.prefix(65536)))
-        #expect(try FileManager.default.contentsOfDirectory(atPath:folder.path).sorted() == ["TEST GAME.bin","manifest.json"])
+        #expect(try FileManager.default.contentsOfDirectory(atPath:folder.path).sorted() == ["Test Game (JP, US, EU).bin","manifest.json"])
     }
 }
 
@@ -33,8 +41,8 @@ import Testing
     let folder = try #require(result.folder)
     let rom = try #require(result.manifest.artifacts.first(where: { $0.isROM }))
     let file = try Data(contentsOf:folder.appendingPathComponent(rom.filename))
-    #expect(folder.lastPathComponent.hasPrefix("TEST GAME — "))
-    #expect(result.manifest.artifacts.map(\.filename) == ["TEST GAME.bin","TEST GAME.srm"])
+    #expect(folder.lastPathComponent.hasPrefix("Test Game (JP, US, EU) — "))
+    #expect(result.manifest.artifacts.map(\.filename) == ["Test Game (JP, US, EU).bin","Test Game (JP, US, EU).srm"])
     for artifact in result.manifest.artifacts {
         let url = folder.appendingPathComponent(artifact.filename)
         #expect(try url.resourceValues(forKeys:[.isHiddenKey]).isHidden == false)
@@ -89,8 +97,8 @@ import Testing
     let plan = try WritePlan(target:target,image:ROMImage(data:fixtureROM()),romName:"new.bin",save:nil,saveName:nil,format:.raw,backupDestination:destination)
     let result = try OperationRunner.write(device:device,plan:plan,progress:{_ in})
     let folder = try #require(result.folder)
-    #expect(try Data(contentsOf:folder.appendingPathComponent("TEST GAME.bin")) == oldROM)
-    #expect(try Data(contentsOf:folder.appendingPathComponent("TEST GAME.srm")) == oldSave)
+    #expect(try Data(contentsOf:folder.appendingPathComponent("Test Game (JP, US, EU).bin")) == oldROM)
+    #expect(try Data(contentsOf:folder.appendingPathComponent("Test Game (JP, US, EU).srm")) == oldSave)
 }
 @Test func romOnlySaveReadFailureStopsBeforeErasing() throws {
     let device = MemoryDevice(), target = try device.inspect(profile:.krikzz4M)

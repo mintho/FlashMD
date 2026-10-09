@@ -142,7 +142,7 @@ public struct OperationFailure: LocalizedError, Sendable {
 
 public enum OperationRunner {
     public static func backup(device: any CartridgeDevice, request: BackupRequest, progress: ProgressHandler, allowBlank: Bool = false) throws -> OperationResult {
-        let name = backupName(for:request.cartridge.metadata?.title ?? "Cartridge Backup")
+        let name = backupName(for:request.cartridge.metadata?.title ?? "Cartridge Backup",regions:request.cartridge.regions)
         let date = DateFormatter()
         date.locale = Locale(identifier:"en_US_POSIX"); date.dateFormat = "yyyy-MM-dd HH-mm-ss"
         let folder = request.destination.appendingPathComponent("\(name) — \(date.string(from:Date())) — \(UUID().uuidString.prefix(8))", isDirectory: true)
@@ -341,18 +341,34 @@ public enum OperationRunner {
         visible = destination
         try visible.setResourceValues(values)
     }
-    static func backupName(for title: String) -> String {
+    static func backupName(for title: String, regions: [String] = []) -> String {
         let invalid = CharacterSet(charactersIn:"/\\:*?\"<>|").union(.controlCharacters)
         let cleaned = title.precomposedStringWithCanonicalMapping.unicodeScalars.map {
             invalid.contains($0) ? " " : String($0)
         }.joined().split(whereSeparator: { $0.isWhitespace }).joined(separator:" ")
+        let minorWords: Set<String> = ["a", "an", "and", "as", "at", "but", "by", "for", "from", "in", "into", "nor", "of", "on", "or", "per", "the", "to", "via", "vs", "with"]
+        let romanNumerals: Set<String> = ["I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X", "XI", "XII", "XIII", "XIV", "XV", "XVI"]
+        let locale = Locale(identifier:"en_US_POSIX")
+        let trimmed = cleaned.trimmingCharacters(in:CharacterSet(charactersIn:" .-"))
+        let words = trimmed.split(separator:" ").enumerated().map { index, word in
+            let lower = word.lowercased(with:locale)
+            let letters = lower.trimmingCharacters(in:CharacterSet.letters.inverted)
+            if index > 0, minorWords.contains(letters) { return lower }
+            if romanNumerals.contains(String(word).uppercased(with:locale)) { return String(word).uppercased(with:locale) }
+            return String(word).capitalized(with:locale)
+        }
+        let titleCase = words.isEmpty ? "Untitled Cartridge" : words.joined(separator:" ")
+        let regionSet = Set(regions)
+        let tags = [("Japan", "JP"), ("USA", "US"), ("Europe", "EU")]
+            .compactMap { regionSet.contains($0.0) ? $0.1 : nil }
+        let suffix = tags.isEmpty ? "" : " (\(tags.joined(separator:", ")))"
         var name = ""
-        for character in cleaned {
-            guard name.utf8.count + String(character).utf8.count <= 120 else { break }
+        for character in titleCase {
+            guard name.utf8.count + String(character).utf8.count + suffix.utf8.count <= 120 else { break }
             name.append(character)
         }
         name = name.trimmingCharacters(in:CharacterSet(charactersIn:" .-"))
-        return name.isEmpty ? "Untitled Cartridge" : name
+        return name + suffix
     }
     private static func makeManifest(_ cartridge: CartridgeSnapshot) -> OperationManifest {
         .init(schemaVersion:1,date:Date(),device:cartridge.identity,cartridgeTitle:cartridge.title,profile:cartridge.profile,rawHeader:cartridge.rawHeader,romSize:cartridge.romSize,flashCapacity:cartridge.flashCapacity,saveLayout:cartridge.saveLayout,outcome:"in progress",artifacts:[],phases:[],error:nil)
