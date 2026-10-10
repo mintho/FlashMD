@@ -127,12 +127,13 @@ FlashMD supports standard Mega Drive / Genesis ROM cartridges and SRAM saves wit
 | SSF2-style banked SRAM backup | — | Yes |
 | Pier Solar ROM backup | Yes | Yes |
 | Pier Solar SPI save backup | Yes | — |
+| Writing ROM or SRAM on banked cartridges | Currently not supported | Currently not supported |
 
 **Bank switching:** MD Dumper successfully backed up Demons of Asteborg and Daemon Claw. SSF2-style switching is implemented for FlashKit, but none of the tested cartridges using it could be backed up with our FlashKit; support is therefore not confirmed. Pier Solar uses a different mapper and worked with both readers. FlashMD checks bank switching during scanning before offering a banked ROM backup.
 
 **Save memory:** SRAM backup and restoration depend on the detected memory layout. MD Dumper supports odd-lane SRAM, the common layout that stores one save byte per bus word. FlashMD offers restoration when write access is supported; some detected layouts are available for backup only. Banked SRAM backup requires a successful memory check.
 
-**Special hardware:** The dashes mark save operations currently unavailable on that reader. EEPROM and other custom save protocols, plus banked ROM and banked save writing, are not implemented yet. ROM and save backups do not include separate storage for cartridge hardware such as additional audio chips.
+**Special hardware:** The dashes mark save operations currently unavailable on that reader. EEPROM and other custom save protocols are not implemented yet. ROM and save backups do not include separate storage for cartridge hardware such as additional audio chips.
 
 ### Read verification and streaming
 
