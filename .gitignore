@@ -20,6 +20,7 @@ xcuserdata/
 *.ipa
 *.dSYM/
 *.dSYM.zip
+/Release/
 
 # Local machine configuration and credentials
 .DS_Store
