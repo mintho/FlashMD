@@ -6,10 +6,6 @@ Scan a cartridge, inspect its game information, and back up its ROM, save data, 
 
 ![FlashMD start screen](Screenshots/start.png)
 
-## Status
-
-FlashMD is under development and being prepared for a public beta. Compatibility depends on the cartridge, programmer and firmware. Unsupported operations stay disabled; FlashMD does not support every cartridge or mapper.
-
 ## Features
 
 - Automatic FlashKit and MD Dumper discovery.
@@ -29,10 +25,9 @@ FlashMD is under development and being prepared for a public beta. Compatibility
 
 - macOS 14 Sonoma or later.
 - A compatible FlashKit or MD Dumper in Mega Drive mode.
-- A cartridge supported by the selected programmer and operation.
 - For building from source: Xcode with Swift 6 support.
 
-MD Dumper hardware testing has used **firmware 2.0, board 3**. Several advanced operations are restricted to that combination. Other revisions and FlashKit clones may behave differently.
+MD Dumper hardware testing has used **firmware 2.0, board 3**. SRAM transfers, Pier Solar ROM backup, ROM writing and streaming currently require that configuration. Standard ROM backup is also available on other supported revisions.
 
 ## Before inserting or removing a cartridge
 
@@ -75,9 +70,9 @@ This produces a local build, not a signed and notarized distribution package.
 6. Click **Back Up…** and choose a destination. FlashMD creates a new folder for that backup.
 7. Wait for completion. Use **Show in Finder** to open the folder, or **New Transfer** to return to the controls.
 
-The suggested size is an estimate. Incorrect headers, mirrored memory and cartridge hardware can complicate size detection. A complete-ROM export covers the accessible range; it cannot expose unsupported banks or additional hardware storage. Unstable reads can make a complete export unavailable.
+The suggested size combines the game header with an analysis of the cartridge contents, including data beyond an incorrect header. Use **Details** to review it, or **Back Up Complete ROM** to include the full accessible range. Special cartridge hardware is covered below under **Cartridge compatibility**.
 
-If SRAM is disabled, inspect **SAVE MEMORY** and **Game Details**. The cartridge may use an unsupported save protocol, have an invalid header, or expose memory that FlashMD cannot identify reliably. Advanced Settings provides a manual layout for supported SRAM reads; it does not make unsupported hardware writable.
+FlashMD detects SRAM from the header and checks the memory before offering a save backup. If save memory is missing or incorrectly declared, inspect **SAVE MEMORY** and **Game Details**; a manual SRAM layout is available in Advanced Settings.
 
 ## Backup files and save formats
 
@@ -118,26 +113,32 @@ Writing replaces the selected cartridge contents and cannot be undone without an
 
 For MD Dumper, **Prepare ROM Writing…** identifies the flash chip separately from normal scanning. Follow the restart instructions with the same cartridge still inserted, then scan again. FlashMD checks the cartridge before enabling writing. If the reader needs a power cycle or cleanup fails, stop and follow the displayed instructions.
 
-## Compatibility and limits
+## Cartridge compatibility
 
-| Operation | FlashKit | MD Dumper |
+FlashMD supports standard Mega Drive / Genesis ROM cartridges and SRAM saves with both programmers. It also backs up larger games using SSF2-style or Pier Solar bank switching. Scanning sets up the cartridge automatically and checks which operations are available.
+
+| Cartridge / operation | FlashKit | MD Dumper |
 | --- | --- | --- |
-| Linear ROM backup | Supported | Supported |
-| Linear ROM writing | Supported flash chips only | Supported flash chips; preparation and restart required |
-| Linear SRAM backup | Supported layouts with read evidence, or manual read configuration | Supported odd-lane layouts with read evidence, or manual read configuration |
-| Linear SRAM restoration | Confirmed writable layouts; additional write checks where required | Confirmed writable odd-lane layouts |
-| SSF2-style banked ROM backup | Requires a successful mapper check | Requires a successful mapper check |
-| SSF2-style banked SRAM backup | Not supported | Supported layouts after a successful SRAM check on tested firmware |
-| Pier Solar ROM backup | Supported after mapper check | Supported after mapper check on tested firmware |
-| Pier Solar SPI save backup | Supported, read-only | Not supported on the tested reader |
-| Banked ROM or banked save writing | Not supported | Not supported |
-| Other EEPROM / custom save protocols | Not supported | Not supported |
+| Standard ROM backup | Yes | Yes |
+| Standard SRAM backup | Yes | Yes |
+| ROM writing to compatible linear flash cartridges | Yes | Yes — preparation and restart required |
+| SRAM restoration on compatible linear cartridges | Yes | Yes |
+| SSF2-style banked ROM backup | Yes | Yes |
+| SSF2-style banked SRAM backup | — | Yes |
+| Pier Solar ROM backup | Yes | Yes |
+| Pier Solar SPI save backup | Yes | — |
 
-Passing a mapper check is required even when a header identifies a known protocol. FlashKit could not switch the tested Demons of Asteborg cartridge successfully; MD Dumper could. Cartridge hardware such as extra audio storage is outside the ROM/SRAM backup scope.
+**Bank switching:** FlashMD checks the cartridge's response during scanning rather than relying on its title alone. Reader hardware can make a difference: Demons of Asteborg was successfully backed up with MD Dumper, while the tested FlashKit could not switch its banks.
 
-**ROM streaming** is optional for the tested MD Dumper firmware. It uses larger transfers and requires independent verification; the speed gain depends on the cartridge and verification work. Changes take effect on the next scan or backup.
+**Save memory:** SRAM backup and restoration depend on the detected memory layout. MD Dumper supports odd-lane SRAM, the common layout that stores one save byte per bus word. FlashMD offers restoration when write access is supported; some detected layouts are available for backup only. Banked SRAM backup requires a successful memory check.
 
-Scan recovery retries certain ROM comparison failures up to three complete attempts, with fresh reader sessions and independent comparisons. It does not retry cartridge programming or hide persistent failures. Matching reads demonstrate consistency, not universal cartridge completeness or support.
+**Special hardware:** The dashes mark save operations currently unavailable on that reader. EEPROM and other custom save protocols, plus banked ROM and banked save writing, are not implemented yet. ROM and save backups do not include separate storage for cartridge hardware such as additional audio chips.
+
+### Read verification and streaming
+
+Backup verification compares independent reads to check the exported files. During scanning, FlashMD can automatically repeat a ROM read comparison failure up to three complete attempts. Persistent errors are reported, and cartridge programming is never automatically retried. These checks establish read consistency; they cannot prove that every part of an unknown cartridge design has been captured.
+
+**MD Dumper ROM streaming** is an optional setting that uses larger transfers, with independent verification. The speed gain depends on the cartridge. Changes take effect on the next scan or backup.
 
 ## Troubleshooting and reporting issues
 
