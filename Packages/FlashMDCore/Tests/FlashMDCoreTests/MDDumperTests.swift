@@ -156,7 +156,14 @@ private final class DumperWire: ByteTransport, @unchecked Sendable {
             return result
         }
         if saveControl == 3 || alwaysVisibleSave, (0x200000..<(mirroredVisibleSave ? 0x400000 : 0x210000)).contains(address) {
-            var data = Data((address..<address+count).map { $0 & 1 == 1 ? save[(($0-0x200000) % 0x10000)/2] : 0xFF })
+            var data = Data(repeating:0xFF,count:count)
+            for offset in 0..<count {
+                let busAddress = address + offset
+                if busAddress & 1 == 1 {
+                    let saveIndex = ((busAddress - 0x200000) % 0x10000) / 2
+                    data[offset] = save[saveIndex]
+                }
+            }
             if floatingVisibleLane, address.isMultiple(of:512) {
                 readCounts[address,default:0] += 1
                 let residue = changingVisibleLaneResidue && readCounts[address,default:0].isMultiple(of:2) ? UInt8(0) : visibleLaneResidue
