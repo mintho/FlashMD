@@ -1,46 +1,143 @@
 # FlashMD
 
-A native macOS app for backing up and writing Sega Mega Drive / Genesis cartridges with a **FlashKit** or **MD Dumper**.
+Back up your Sega Mega Drive / Genesis games and saves, or write a new game to a compatible flash cartridge. FlashMD is a native macOS app for **FlashKit** and **MD Dumper** USB programmers.
 
-Scan a cartridge, inspect its game information, and back up its ROM, save data, or both. FlashMD suggests an export size from the cartridge contents and checks supported bank-switching protocols before reading banked games.
+Insert a cartridge, click **Scan Cartridge**, then choose **Backup** or **Write**. FlashMD reads the game information, suggests a ROM backup size and checks the available save memory.
 
 ![FlashMD start screen](Screenshots/start.png)
 
+## What you need
+
+- **macOS 14 Sonoma or later.**
+- One of these USB programmers:
+  - [Krikzz FlashKit programmer MD](https://krikzz.com/our-products/accessories/flashkitmd.html)
+  - [MD Dumper by X-death on Tindie](https://www.tindie.com/products/xdeath/usb-megadrive-genesis-cartridge-readerwriter/)
+- A Mega Drive / Genesis cartridge. ROM writing requires a compatible writable flash cartridge.
+
+Set MD Dumper to **Mega Drive mode**. The tested model uses **firmware 2.0, board 3**, which is currently required for SRAM transfers, Pier Solar ROM backup, ROM writing and streaming. Other supported revisions can be used for standard ROM backups.
+
+FlashMD communicates directly with the programmer. You do not need Python or the manufacturer's application to use it.
+
 ## Features
 
-- Automatic FlashKit and MD Dumper discovery.
-- Cartridge title, region, product/revision code, header checksum and declared memory information.
-- Editable display titles for cartridges with missing or misleading metadata.
-- ROM content analysis with a suggested backup size and a complete-ROM option.
-- Separate ROM and save exports, descriptive filenames and a JSON backup manifest.
-- Backup verification enabled by default; mandatory for banked ROMs, serial saves and MD Dumper streaming.
-- ROM programming and SRAM restoration on supported writable linear cartridges, with write verification.
-- Banked ROM backup: SSF2-style cartridges with MD Dumper, and Pier Solar with either programmer.
-- Advanced cartridge configuration, SRAM formats, programmer selection and optional MD Dumper ROM streaming.
-- Progress, transfer results and an activity history.
+- Back up the game ROM, cartridge saves, or both.
+- Write ROM files and restore SRAM saves on compatible cartridges.
+- See the title, region, revision code and other game information. Use the pencil beside the title to correct a missing or misleading name.
+- Get a suggested backup size based on the game header and cartridge contents.
+- Back up SSF2-style banked games with MD Dumper, and Pier Solar with either programmer.
+- Follow transfer progress, check the result and review previous actions in Activity.
 
 ![Cartridge information and backup controls](Screenshots/backup.png)
 
-## Requirements
+## Before changing cartridges
 
-- macOS 14 Sonoma or later.
-- A compatible FlashKit or MD Dumper in Mega Drive mode.
-- For building from source: Xcode with Swift 6 support.
+**Finish any transfer and remove power before inserting or removing a cartridge:**
 
-MD Dumper hardware testing has used **firmware 2.0, board 3**. SRAM transfers, Pier Solar ROM backup, ROM writing and streaming currently require that configuration. Standard ROM backup is also available on other supported revisions.
+- **MD Dumper:** turn it **off**.
+- **FlashKit:** **unplug its USB cable**.
 
-## Before inserting or removing a cartridge
+Insert the next cartridge, reconnect or turn on the programmer, then scan again. Closing FlashMD does not turn the programmer off. Leave the cartridge and USB cable connected while scanning, backing up or writing.
 
-**Wait until any transfer has finished, then remove power before changing cartridges:**
+## Back up a game or save
 
-- **MD Dumper:** turn the programmer **off** before inserting or removing a cartridge.
-- **FlashKit:** **disconnect its USB cable** before inserting or removing a cartridge.
+1. Insert the cartridge with the programmer off or unplugged, then connect or turn it on.
+2. Open FlashMD and click **Scan Cartridge**. Close any other application using the programmer.
+3. In **Backup**, select **Game ROM**, **SRAM data**, or both. Click anywhere on either panel to select it. Pier Solar saves appear as **SPI save data**.
+4. Leave the suggested ROM size selected, or turn on **Back Up Complete ROM** to include the full range the reader can access. **Details** explains the size suggestion.
+5. Click **Back Up…** and choose where to save it. FlashMD creates a new folder for each backup.
+6. When finished, click **Show in Finder** to see the files, or **New Transfer** to return to the controls.
 
-After inserting the cartridge, reconnect or turn on the programmer, then scan again. Closing FlashMD does not remove power from the device. Keep the cartridge seated and the programmer connected throughout scanning, backup and writing.
+Backup verification is on by default: FlashMD reads the data again and compares it with the backup. Verification is always used for banked ROMs, SPI saves and MD Dumper streaming.
 
-## Build and launch
+If save backup is unavailable, check **SAVE MEMORY** and **Game Details**. A missing or incorrect SRAM header can sometimes be handled by entering the memory layout in **Advanced Settings**. See [Cartridge compatibility](#cartridge-compatibility) for special save hardware.
 
-The Xcode project is included in this repository; no Python client or separate dumper application is needed at runtime.
+## Write a game or restore a save
+
+ROM writing requires a **compatible writable flash cartridge**; the ROM chips in ordinary retail cartridges cannot be rewritten. SRAM saves can be restored on compatible cartridges with writable save memory.
+
+1. Scan the target cartridge and select **Write**.
+2. Select **Game ROM**, **SRAM data**, or both, then choose the files to write.
+3. Check the cartridge capacity and selected files.
+4. Click **Write…**, review the changes, then confirm with **Write ROM**, **Write Saves** or **Write Both**.
+5. Wait for writing and verification to finish before disconnecting anything.
+
+**Writing replaces the selected cartridge contents.** Make a backup first if you want to keep them. When writing ROM only, FlashMD captures and checks existing SRAM so it can preserve the saves on supported cartridges. If a transfer is interrupted, save recovery files may remain; follow the instructions shown in the app.
+
+**Clear unused ROM space** is on by default. It clears old game data beyond the end of the new ROM within the write range. Your source file on the Mac stays unchanged. MD Dumper erases the whole ROM chip before writing, so it always clears the unused space.
+
+For MD Dumper, first click **Prepare ROM Writing…** in Advanced Settings and follow the instructions. This identifies the flash chip, then asks you to restart the reader with the same cartridge inserted. Scan again to let FlashMD check the cartridge and enable writing.
+
+**Writing ROM or SRAM on banked cartridges is currently unsupported on both programmers.**
+
+## Your backup files
+
+ROM and saves are separate files, even when you back up both at once.
+
+| File | What it contains |
+| --- | --- |
+| `.bin` | The game ROM. |
+| `.srm` | The cartridge's saved games or other save data. |
+| `manifest.json` | Backup details, file sizes, checksums and verification results. Useful when reporting a problem. |
+
+Files are named after the game, with region codes such as `(JP, US, EU)`. A recognised nonzero revision code adds a tag such as `[rev 1]`; this comes from the header rather than a checked release history. Each backup folder also has a timestamp and unique identifier.
+
+A `.srm` file is a **cartridge save**, not an emulator save state. To use it in an emulator or flash cart, check the required filename and save format.
+
+### SRAM formats
+
+**SRAM export format** in Advanced Settings offers two choices:
+
+- **Save bytes only** — the default. Keeps just the save data, without unused bus bytes. Start with this when transferring saves to an emulator or flash cart.
+- **Full bus dump** — also keeps the unused byte lane. A single-lane SRAM dump is twice the size of the save data. Choose this when another tool expects an interleaved bus dump. MD Dumper fills the unused lane with zeros.
+
+For restoring saves, **SRAM input format** defaults to **Automatic**. FlashMD compares the file size with the cartridge's SRAM layout. If the format is ambiguous, choose it manually.
+
+Pier Solar uses a different save chip. Its export keeps the full 64 KiB serial address range, including repeated data; this does not mean the physical chip is 64 KiB.
+
+## Cartridge compatibility
+
+Both programmers can back up standard Mega Drive / Genesis ROMs and SRAM saves. Larger games may use **bank switching**, which lets the cartridge expose different parts of its ROM or save memory. Support for these cartridges differs between readers.
+
+| Cartridge / operation | FlashKit | MD Dumper |
+| --- | --- | --- |
+| Standard ROM backup | Yes | Yes |
+| Standard SRAM backup | Yes | Yes |
+| ROM writing to compatible flash cartridges without bank switching | Yes | Yes — preparation and restart required |
+| SRAM restoration on compatible cartridges without bank switching | Yes | Yes |
+| SSF2-style banked ROM backup | Unavailable on tested reader | Yes |
+| SSF2-style banked SRAM backup | Not supported | Yes |
+| Pier Solar ROM backup | Yes | Yes |
+| Pier Solar SPI save backup | Yes | Not supported |
+| Writing ROM or SRAM on banked cartridges | Currently not supported | Currently not supported |
+
+**Banked games:** MD Dumper successfully backed up Demons of Asteborg and Daemon Claw. FlashKit has an SSF2-style implementation, but we could not back up any of the tested cartridges using it, so support is not confirmed. Pier Solar uses a different mapper and worked with both readers. FlashMD checks bank switching during the scan before offering a backup.
+
+**SRAM saves:** FlashMD checks the detected memory layout before offering save transfers. Some layouts allow backup only. MD Dumper supports the common odd-address SRAM layout, which stores one save byte per bus word.
+
+**Special hardware:** EEPROM and other custom save protocols are not yet supported. Separate storage for extra cartridge hardware, such as audio chips, is not included in a ROM or save backup.
+
+Verification checks that repeated reads match. It cannot prove that every part of an unknown cartridge design has been captured. A complete-ROM backup includes the accessible range, not unsupported banks or separate hardware storage.
+
+## Advanced Settings
+
+Most transfers start with a scan. Open **Advanced Settings** when you need to select a programmer, override the cartridge's memory layout, choose a save format or set an exact ROM export size.
+
+**MD Dumper ROM streaming** reads larger chunks at a time and always verifies them independently. The speed gain depends on the cartridge. Changes take effect on the next scan or backup.
+
+## Troubleshooting
+
+- **No programmer found:** check USB, the power switch and Mega Drive mode. Close other dumper applications and scan again.
+- **Unreadable header:** follow the restart instructions with the cartridge still inserted. Use **Prepare ROM Writing…** only when preparing a writable flash cartridge.
+- **Verification failed:** check Activity, restart the reader as instructed and scan again. Treat the backup or write as incomplete until verification succeeds.
+- **Wrong title:** click the pencil beside the title. This changes the display name and backup filenames, not the cartridge itself.
+
+FlashMD automatically retries certain ROM comparison errors during scanning, for up to three complete attempts. If the error persists, it reports the problem. Writing is never automatically retried.
+
+To [report a problem](https://github.com/mintho/FlashMD/issues), include your macOS version, programmer model and firmware, cartridge edition, what you were doing, and the exact error. Activity details and a backup manifest can help; remove personal paths before sharing them. Please do not attach game ROMs or personal saves.
+
+## Build from source
+
+You need **Xcode with Swift 6 support**. The repository includes the Xcode project and its local core package.
 
 ```sh
 git clone https://github.com/mintho/FlashMD.git
@@ -48,9 +145,9 @@ cd FlashMD
 open FlashMD.xcodeproj
 ```
 
-Select the **FlashMD** scheme and **My Mac**, then run with **⌘R**. Configure a signing team in Xcode if required by your setup. The bundled core package is a local dependency.
+Select the **FlashMD** scheme and **My Mac**, then press **⌘R**. Choose your own signing team in Xcode if needed.
 
-For a command-line build without distribution signing:
+To build from the command line without distribution signing:
 
 ```sh
 xcodebuild -project FlashMD.xcodeproj -scheme FlashMD \
@@ -58,116 +155,24 @@ xcodebuild -project FlashMD.xcodeproj -scheme FlashMD \
   -derivedDataPath build/DerivedData CODE_SIGNING_ALLOWED=NO build
 ```
 
-This produces a local build, not a signed and notarized distribution package.
+This makes a local build, not a signed and notarized release.
 
-## Back up a cartridge
-
-1. Insert the cartridge with the programmer powered off or disconnected, as described above.
-2. Connect or turn on the programmer. Close other applications that might be using it.
-3. Open FlashMD and click **Scan Cartridge**. Wait for identification and content analysis to finish.
-4. In **Backup**, select **Game ROM**, **SRAM data**, or both. Click anywhere on a panel to change its selection. Serial save cartridges use a separate save label.
-5. Leave the suggested ROM size selected, or enable **Back Up Complete ROM** to read the entire accessible range. **Details** explains the suggestion and any uncertain memory areas.
-6. Click **Back Up…** and choose a destination. FlashMD creates a new folder for that backup.
-7. Wait for completion. Use **Show in Finder** to open the folder, or **New Transfer** to return to the controls.
-
-The suggested size combines the game header with an analysis of the cartridge contents, including data beyond an incorrect header. Use **Details** to review it, or **Back Up Complete ROM** to include the full accessible range. Special cartridge hardware is covered below under **Cartridge compatibility**.
-
-FlashMD detects SRAM from the header and checks the memory before offering a save backup. If save memory is missing or incorrectly declared, inspect **SAVE MEMORY** and **Game Details**; a manual SRAM layout is available in Advanced Settings.
-
-## Backup files and save formats
-
-A backup can contain:
-
-| File | Contents |
-| --- | --- |
-| `.bin` | Raw, big-endian game ROM. |
-| `.srm` | Separate cartridge save data in the selected export format. |
-| `manifest.json` | Cartridge and reader information, memory layout, file sizes, SHA-256 hashes, verification results and limitations. |
-
-Filenames use the game title, declared regions such as `(JP, US, EU)`, and `[rev N]` when a recognized nonzero revision code is present. The backup folder also includes a timestamp and unique identifier. Revision tags reflect the header code, not a verified retail version history.
-
-ROM and save data are separate files, even when backed up together. A `.srm` file contains cartridge save memory; it is **not an emulator save state**. Emulator and flash-cart save conventions vary, so check the destination's required format and filename.
-
-**SRAM export format** in Advanced Settings offers:
-
-- **Save bytes only** — the default. Exports the active save bytes without unused bus bytes. Usually the useful starting point for transferring saves to an emulator or flash cart.
-- **Full bus dump** — includes both byte lanes. For single-lane SRAM, this is twice the size of the save bytes. Useful when another tool expects an interleaved dump or when preserving the bus representation. MD Dumper fills unused even-lane bytes with zero.
-
-**SRAM input format** defaults to **Automatic**. FlashMD compares the file size with the configured SRAM layout and accepts an unambiguous match. Select a format manually if necessary; file extensions alone do not identify the format.
-
-Pier Solar's supported SPI save export uses save bytes only and preserves the full 64 KiB serial address range. Repeated data is retained; this range is not a claim about the physical chip capacity.
-
-## Write a cartridge
-
-Use a supported **writable flash cartridge**. Ordinary ROM cartridges cannot be rewritten.
-
-1. Scan the target cartridge, then select **Write**.
-2. Select **Game ROM** and/or **SRAM data**, then choose the corresponding files.
-3. Check the available capacity and selected operations.
-4. Click **Write…**, review the changes and confirm with **Write ROM**, **Write Saves** or **Write Both**.
-5. Keep the programmer connected until writing and verification finish.
-
-Writing replaces the selected cartridge contents and cannot be undone without an existing backup. Make a backup first if you need to keep them. Selecting only ROM is intended to preserve existing SRAM on supported configurations; recovery files may be created while preserving saves during a write.
-
-**Clear unused ROM space** is enabled by default. It erases cartridge ROM beyond the new game's end within the supported write range. It does not modify the source file on your Mac. MD Dumper's supported ROM-writing procedure erases the whole flash chip, so unused ROM cannot be retained there.
-
-For MD Dumper, **Prepare ROM Writing…** identifies the flash chip separately from normal scanning. Follow the restart instructions with the same cartridge still inserted, then scan again. FlashMD checks the cartridge before enabling writing. If the reader needs a power cycle or cleanup fails, stop and follow the displayed instructions.
-
-## Cartridge compatibility
-
-FlashMD supports standard Mega Drive / Genesis ROM cartridges and SRAM saves with both programmers. For larger banked games, MD Dumper successfully backed up the tested SSF2-style cartridges, while Pier Solar ROM backup worked with both readers. Scanning sets up the cartridge automatically and checks which operations are available.
-
-| Cartridge / operation | FlashKit | MD Dumper |
-| --- | --- | --- |
-| Standard ROM backup | Yes | Yes |
-| Standard SRAM backup | Yes | Yes |
-| ROM writing to compatible linear flash cartridges | Yes | Yes — preparation and restart required |
-| SRAM restoration on compatible linear cartridges | Yes | Yes |
-| SSF2-style banked ROM backup | Unavailable on tested reader | Yes |
-| SSF2-style banked SRAM backup | — | Yes |
-| Pier Solar ROM backup | Yes | Yes |
-| Pier Solar SPI save backup | Yes | — |
-| Writing ROM or SRAM on banked cartridges | Currently not supported | Currently not supported |
-
-**Bank switching:** MD Dumper successfully backed up Demons of Asteborg and Daemon Claw. SSF2-style switching is implemented for FlashKit, but none of the tested cartridges using it could be backed up with our FlashKit; support is therefore not confirmed. Pier Solar uses a different mapper and worked with both readers. FlashMD checks bank switching during scanning before offering a banked ROM backup.
-
-**Save memory:** SRAM backup and restoration depend on the detected memory layout. MD Dumper supports odd-lane SRAM, the common layout that stores one save byte per bus word. FlashMD offers restoration when write access is supported; some detected layouts are available for backup only. Banked SRAM backup requires a successful memory check.
-
-**Special hardware:** The dashes mark save operations currently unavailable on that reader. EEPROM and other custom save protocols are not implemented yet. ROM and save backups do not include separate storage for cartridge hardware such as additional audio chips.
-
-### Read verification and streaming
-
-Backup verification compares independent reads to check the exported files. During scanning, FlashMD can automatically repeat a ROM read comparison failure up to three complete attempts. Persistent errors are reported, and cartridge programming is never automatically retried. These checks establish read consistency; they cannot prove that every part of an unknown cartridge design has been captured.
-
-**MD Dumper ROM streaming** is an optional setting that uses larger transfers, with independent verification. The speed gain depends on the cartridge. Changes take effect on the next scan or backup.
-
-## Troubleshooting and reporting issues
-
-- **No programmer found:** check the USB connection, power switch and Mega Drive mode. Close other dumper applications, then scan again.
-- **Unreadable header:** follow the restart instructions with the cartridge still inserted. Do not prepare ROM writing merely to troubleshoot a retail cartridge.
-- **Verification failed:** do not treat the operation as successful. Check Activity, restart the reader as instructed and scan again.
-- **Incorrect game title:** use the pencil beside the title. This changes FlashMD's display/export name, not the cartridge header.
-
-When [reporting an issue](https://github.com/mintho/FlashMD/issues), include the macOS version, programmer model/firmware, cartridge edition, operation, exact error and relevant Activity details. If available, include the backup manifest after removing personal paths. Do not attach game ROMs or personal save files.
-
-## Development
-
-Run the software tests:
+Run the software tests with:
 
 ```sh
 swift test --package-path Packages/FlashMDCore
 ```
 
-Hardware tests are opt-in and skipped by default. The app includes **Cartridge → Demo Mode** for exploring the interface without accessing cartridge contents; transfers are disabled in that mode.
+Hardware tests are opt-in and skipped by default. To explore the interface without a cartridge, choose **Cartridge → Demo Mode**. Transfers are disabled in that mode.
 
 ## License and credits
 
-FlashMD is licensed under the **GNU General Public License, version 3**. See [LICENSE](LICENSE) and [NOTICE](NOTICE). Distributed binaries must be accompanied by access to their corresponding source under the license terms.
+FlashMD is licensed under **GNU GPL version 3**. See [LICENSE](LICENSE) and [NOTICE](NOTICE). Distributed binaries must come with access to the corresponding source under the license terms.
 
-Protocol and command-sequence references include:
+The following projects provided protocol and command references:
 
 - [Krikzz FlashKit](https://github.com/krikzz/flashkit) — GPLv3.
 - [Joey Parrish's FlashKit MD Python client](https://github.com/joeyparrish/flashkit-md-py) — GPLv3.
 - [X-death25's MD Dumper software](https://github.com/X-death25/MD_Dumper) — GPLv3.
 
-FlashMD uses native Swift, POSIX serial access and Apple's IOKit USB APIs. It does not bundle the reference clients, cartridge firmware, game ROMs or BIOS files. FlashMD is not affiliated with Sega or the programmer manufacturers.
+FlashMD uses native Swift and macOS serial/USB APIs. It does not bundle the reference clients, cartridge firmware, game ROMs or BIOS files. FlashMD is not affiliated with Sega or the programmer manufacturers.
