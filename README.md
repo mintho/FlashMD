@@ -14,8 +14,6 @@ Insert a cartridge, click **Scan Cartridge**, then choose **Backup** or **Write*
   - [MD Dumper by X-death on Tindie](https://www.tindie.com/products/xdeath/usb-megadrive-genesis-cartridge-readerwriter/)
 - A Mega Drive / Genesis cartridge. ROM writing requires a compatible writable flash cartridge.
 
-Set MD Dumper to **Mega Drive mode**. The tested model uses **firmware 2.0, board 3**, which is currently required for SRAM transfers, Pier Solar ROM backup, ROM writing and streaming. Other supported revisions can be used for standard ROM backups.
-
 FlashMD communicates directly with the programmer. You do not need Python or the manufacturer's application to use it.
 
 ## Features
@@ -29,14 +27,16 @@ FlashMD communicates directly with the programmer. You do not need Python or the
 
 ![Cartridge information and backup controls](Screenshots/backup.png)
 
-## Before changing cartridges
+## Before inserting or removing a cartridge
 
-**Finish any transfer and remove power before inserting or removing a cartridge:**
+**Always remove power before inserting or removing a cartridge.** If a scan or transfer is running, wait for it to finish first.
 
 - **MD Dumper:** turn it **off**.
 - **FlashKit:** **unplug its USB cable**.
 
-Insert the next cartridge, reconnect or turn on the programmer, then scan again. Closing FlashMD does not turn the programmer off. Leave the cartridge and USB cable connected while scanning, backing up or writing.
+This applies every time, including the first insertion, removal after use and cartridge swaps. Closing FlashMD does not turn the programmer off.
+
+After inserting a cartridge, reconnect USB or turn the programmer on, then scan it. Keep the cartridge and USB cable connected while scanning, backing up or writing.
 
 ## Back up a game or save
 
@@ -110,6 +110,8 @@ Both programmers can back up standard Mega Drive / Genesis ROMs and SRAM saves. 
 | Pier Solar SPI save backup | Yes | Not supported |
 | Writing ROM or SRAM on banked cartridges | Currently not supported | Currently not supported |
 
+**MD Dumper versions:** Our reader reports **firmware 2.0** (its built-in software) and **board ID 3** (its hardware identifier). FlashMD reads these automatically; there is nothing to configure. SRAM transfers, Pier Solar ROM backup, ROM writing and streaming currently require this combination. Other supported versions can be used for standard ROM backups.
+
 **Banked games:** MD Dumper successfully backed up Demons of Asteborg and Daemon Claw. FlashKit has an SSF2-style implementation, but we could not back up any of the tested cartridges using it, so support is not confirmed. Pier Solar uses a different mapper and worked with both readers. FlashMD checks bank switching during the scan before offering a backup.
 
 **SRAM saves:** FlashMD checks the detected memory layout before offering save transfers. Some layouts allow backup only. MD Dumper supports the common odd-address SRAM layout, which stores one save byte per bus word.
@@ -126,7 +128,7 @@ Most transfers start with a scan. Open **Advanced Settings** when you need to se
 
 ## Troubleshooting
 
-- **No programmer found:** check USB, the power switch and Mega Drive mode. Close other dumper applications and scan again.
+- **No programmer found:** check USB and the power switch. Close other dumper applications and scan again.
 - **Unreadable header:** follow the restart instructions with the cartridge still inserted. Use **Prepare ROM Writing…** only when preparing a writable flash cartridge.
 - **Verification failed:** check Activity, restart the reader as instructed and scan again. Treat the backup or write as incomplete until verification succeeds.
 - **Wrong title:** click the pencil beside the title. This changes the display name and backup filenames, not the cartridge itself.
