@@ -15,7 +15,7 @@ Scan a cartridge, inspect its game information, and back up its ROM, save data, 
 - Separate ROM and save exports, descriptive filenames and a JSON backup manifest.
 - Backup verification enabled by default; mandatory for banked ROMs, serial saves and MD Dumper streaming.
 - ROM programming and SRAM restoration on supported writable linear cartridges, with write verification.
-- Read-only banked ROM backup using supported SSF2 and Pier Solar mapper protocols.
+- Banked ROM backup: SSF2-style cartridges with MD Dumper, and Pier Solar with either programmer.
 - Advanced cartridge configuration, SRAM formats, programmer selection and optional MD Dumper ROM streaming.
 - Progress, transfer results and an activity history.
 
@@ -115,7 +115,7 @@ For MD Dumper, **Prepare ROM Writing…** identifies the flash chip separately f
 
 ## Cartridge compatibility
 
-FlashMD supports standard Mega Drive / Genesis ROM cartridges and SRAM saves with both programmers. It also backs up larger games using SSF2-style or Pier Solar bank switching. Scanning sets up the cartridge automatically and checks which operations are available.
+FlashMD supports standard Mega Drive / Genesis ROM cartridges and SRAM saves with both programmers. For larger banked games, MD Dumper successfully backed up the tested SSF2-style cartridges, while Pier Solar ROM backup worked with both readers. Scanning sets up the cartridge automatically and checks which operations are available.
 
 | Cartridge / operation | FlashKit | MD Dumper |
 | --- | --- | --- |
@@ -123,12 +123,12 @@ FlashMD supports standard Mega Drive / Genesis ROM cartridges and SRAM saves wit
 | Standard SRAM backup | Yes | Yes |
 | ROM writing to compatible linear flash cartridges | Yes | Yes — preparation and restart required |
 | SRAM restoration on compatible linear cartridges | Yes | Yes |
-| SSF2-style banked ROM backup | Yes | Yes |
+| SSF2-style banked ROM backup | Unavailable on tested reader | Yes |
 | SSF2-style banked SRAM backup | — | Yes |
 | Pier Solar ROM backup | Yes | Yes |
 | Pier Solar SPI save backup | Yes | — |
 
-**Bank switching:** FlashMD checks the cartridge's response during scanning rather than relying on its title alone. Reader hardware can make a difference: Demons of Asteborg was successfully backed up with MD Dumper, while the tested FlashKit could not switch its banks.
+**Bank switching:** MD Dumper successfully backed up Demons of Asteborg and Daemon Claw. SSF2-style switching is implemented for FlashKit, but none of the tested cartridges using it could be backed up with our FlashKit; support is therefore not confirmed. Pier Solar uses a different mapper and worked with both readers. FlashMD checks bank switching during scanning before offering a banked ROM backup.
 
 **Save memory:** SRAM backup and restoration depend on the detected memory layout. MD Dumper supports odd-lane SRAM, the common layout that stores one save byte per bus word. FlashMD offers restoration when write access is supported; some detected layouts are available for backup only. Banked SRAM backup requires a successful memory check.
 
