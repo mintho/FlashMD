@@ -49,12 +49,12 @@ public final class MDDumperUSBTransport: ByteTransport, @unchecked Sendable {
     }
     public func read(count: Int, timeout: TimeInterval, cancellable: Bool) throws -> Data {
         guard let handle else { throw FlashMDError.disconnected }
-        guard count == 64 else { throw FlashMDError.invalid("Invalid MD Dumper USB read length.") }
+        guard count >= 64, count <= 32768, count.isMultiple(of:64) else { throw FlashMDError.invalid("Invalid MD Dumper USB read length.") }
         if cancellable { try Task.checkCancellation() }
         var data = Data(count:count), length = UInt32(count)
         let status = data.withUnsafeMutableBytes { fm_usb_read(handle,$0.bindMemory(to:UInt8.self).baseAddress,&length,UInt32(max(1,timeout * 1000))) }
         guard status == 0 else { throw Self.error(status) }
-        guard length == count else { throw FlashMDError.invalid("Incomplete MD Dumper reply. Reconnect USB.") }
-        return data
+        guard length > 0, length <= count, length.isMultiple(of:64), count != 64 || length == 64 else { throw FlashMDError.invalid("Incomplete MD Dumper reply. Reconnect USB.") }
+        return Data(data.prefix(Int(length)))
     }
 }

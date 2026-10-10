@@ -77,7 +77,15 @@ public struct ROMMetadata: Codable, Sendable, Equatable {
     public let saveLayout: SRAMLayout?
     public let saveWarning: String?
     public let rawHeader: Data
-    public var title: String { internationalTitle.isEmpty ? (domesticTitle.isEmpty ? "Untitled cartridge" : domesticTitle) : internationalTitle }
+    // Some Neofid cartridges put studio credits in the international title slot.
+    // Keep both original fields in metadata, but use the game name for display/export.
+    public var title: String {
+        if internationalTitle.uppercased() == "NEOFID STUDIOS BITBEAM CANNON", !domesticTitle.isEmpty { return domesticTitle }
+        return internationalTitle.isEmpty ? (domesticTitle.isEmpty ? "Untitled cartridge" : domesticTitle) : internationalTitle
+    }
+    var isDaemonClaw: Bool {
+        domesticTitle.uppercased() == "DAEMON CLAW" && internationalTitle.uppercased() == "NEOFID STUDIOS BITBEAM CANNON"
+    }
     public var revision: Int? {
         guard productCode.range(of:"^(GM|AI|OS|BR) [A-Za-z0-9-]+-[0-9]{2}$",options:.regularExpression) != nil else { return nil }
         return Int(productCode.suffix(2))
@@ -88,7 +96,12 @@ public struct ROMMetadata: Codable, Sendable, Equatable {
         let data = Data(data.prefix(512))
         func text(_ offset: Int, _ count: Int) -> String {
             let bytes = Data(data[offset..<offset + count]).map { $0 == 0 || $0 == 0xFF ? UInt8(32) : $0 }
-            let value = String(data: Data(bytes), encoding: .shiftJIS) ?? String(decoding: bytes, as: UTF8.self)
+            // Some aftermarket headers use Western copyright/trademark bytes
+            // that are invalid Shift-JIS. Preserve them instead of replacing them.
+            let field = Data(bytes)
+            let value = String(data: field, encoding: .shiftJIS)
+                ?? String(data: field, encoding: .windowsCP1252)
+                ?? String(decoding: bytes, as: UTF8.self)
             return value.components(separatedBy: .controlCharacters).joined().split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
         }
         func u32(_ offset: Int) -> Int { data[offset..<offset+4].reduce(0) { ($0 << 8) | Int($1) } }
@@ -105,13 +118,21 @@ public struct ROMMetadata: Codable, Sendable, Equatable {
         let length = romStart == 0 && romEnd >= 511 && romEnd < 0x1000000 ? romEnd + 1 : nil
         var layout: SRAMLayout?, warning: String?
         if data[0x1B0] == 0x52 && data[0x1B1] == 0x41 {
-            if data[0x1B3] & 0x40 != 0 || data[0x1B2] & 0xF0 != 0xF0 {
+            let type = data[0x1B2]
+            if data[0x1B3] & 0x40 != 0 || ![UInt8(0xF0),0xF8,0xE0].contains(type) {
                 warning = "EEPROM or an unsupported save type is declared."
             } else {
                 let start = u32(0x1B4), end = u32(0x1B8)
-                do { layout = try SRAMLayout(start: start, end: end, lane: (start & 1) == (end & 1) ? start & 1 : nil) }
+                // The type byte declares the lane. Some headers give the whole
+                // bus window (even start, odd end) for single-lane SRAM.
+                let lane: Int? = type == 0xE0 ? nil : type == 0xF8 ? 1 : 0
+                let first = lane.map { start + ((start & 1) == $0 ? 0 : 1) } ?? start
+                let last = lane.map { end - ((end & 1) == $0 ? 0 : 1) } ?? end
+                do { layout = try SRAMLayout(start: first, end: last, lane: lane) }
                 catch { warning = error.localizedDescription }
             }
+        } else if data[0x1B0] == 0x45 && data[0x1B1] == 0x50 {
+            warning = "An unsupported save protocol is declared."
         }
         return ROMMetadata(console: text(0x100,16), domesticTitle: text(0x120,48), internationalTitle: text(0x150,48), productCode: text(0x180,14), copyright: copyright, copyrightYear: year, peripherals: text(0x190,16), regions: regions, declaredROMBytes: length, storedChecksum: UInt16(data[0x18E]) << 8 | UInt16(data[0x18F]), saveLayout: layout, saveWarning: warning, rawHeader: Data(data[0x100..<0x200]))
     }

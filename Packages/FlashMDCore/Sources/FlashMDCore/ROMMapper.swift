@@ -14,25 +14,21 @@ public enum ROMMapper: String, CaseIterable, Codable, Sendable, Identifiable {
     public static func detect(_ metadata: ROMMetadata?) -> ROMMapper {
         guard let metadata else { return .linear }
         let system = metadata.console.uppercased()
+        if metadata.isDaemonClaw { return .segaSSF2 }
         if system.hasPrefix("SEGA SSF") || system.hasPrefix("SEGA DOA") { return .segaSSF2 }
         if metadata.title.uppercased().contains("SUPER STREET FIGHTER"),
            [UInt16(0xCE25), 0xE41D, 0xE017].contains(metadata.storedChecksum) { return .segaSSF2 }
         if metadata.productCode.hasPrefix("GM T-574023"), metadata.title.uppercased().hasPrefix("PIER SOLAR") { return .pierSolar }
         return .linear
     }
-    public func size(_ metadata: ROMMetadata?) -> Int? {
-        if self == .pierSolar { return 0x800000 }
-        if self == .segaSSF2, let metadata,
-           metadata.title.uppercased().contains("SUPER STREET FIGHTER"),
-           [UInt16(0xCE25), 0xE41D, 0xE017].contains(metadata.storedChecksum) { return 0x500000 }
-        if self == .segaSSF2, metadata?.console.uppercased().hasPrefix("SEGA DOA") == true {
-            switch metadata?.storedChecksum {
-            case 0x6E1E, 0xBCBF: return 0xEA0000
-            case 0x0000: return 0xEAF2F4
-            default: return nil
-            }
+    /// Supported scan envelope, not physical chip capacity or a game's length.
+    /// Analyze every page, including pages after gaps; never rely on a revision table.
+    public var scanLimit: Int? {
+        switch self {
+        case .segaSSF2: 0x1000000
+        case .pierSolar: 0x800000
+        case .automatic, .linear: nil
         }
-        return metadata?.declaredROMBytes
     }
 }
 
@@ -50,15 +46,27 @@ final class BankedROMReader {
     private let originalPage: Int
     private let select: (Int, UInt8) throws -> Void
     private let read: (Int, Int) throws -> Data
+    private let readTransfer: (Int, Int) throws -> Data
+    var transferBytes: Int
+    private var restorationWitnesses: [(Int, Data)] = []
 
     init(mapper: ROMMapper, size: Int, register: Int? = nil, window: Int? = nil, originalPage: Int? = nil, select: @escaping (Int, UInt8) throws -> Void,
-         read: @escaping (Int, Int) throws -> Data) {
+         read: @escaping (Int, Int) throws -> Data, transferBytes: Int = 32768,
+         readTransfer: ((Int, Int) throws -> Data)? = nil) {
         self.mapper = mapper; self.size = size; self.select = select; self.read = read
+        self.readTransfer = readTransfer ?? read; self.transferBytes = transferBytes
         self.register = register ?? (mapper == .pierSolar ? 0xA13003 : 0xA130FF)
         self.window = window ?? (mapper == .pierSolar ? 0x280000 : 0x380000)
         self.originalPage = originalPage ?? (mapper == .pierSolar ? 0 : 7)
     }
-    func restore() throws { try select(register, UInt8(originalPage)) }
+    func restore() throws {
+        try select(register, UInt8(originalPage))
+        for (offset,expected) in restorationWitnesses {
+            guard try read(offset,expected.count) == expected else {
+                throw FlashMDError.invalid("ROM mapping could not be restored. Unplug USB before continuing.")
+            }
+        }
+    }
 
     func qualify() throws -> Bool {
         // Compare two locations against a page that is already visible elsewhere.
@@ -68,6 +76,11 @@ final class BankedROMReader {
         let header = try read(0, 512)
         let expected = try offsets.map { try read(page * 0x80000 + $0, 512) }
         let original = try offsets.map { try read(window + $0, 512) }
+        restorationWitnesses = [(0,header)] + offsets.enumerated().map { (window+$0.element,original[$0.offset]) }
+        // Pier Solar has only five fixed pages; its three upper windows can
+        // initially all expose page zero. They cannot be reference pages 5–7.
+        let visiblePages = (1..<(mapper == .pierSolar ? 5 : 8)).filter { $0*0x80000 != window || $0 == originalPage }
+        let visible = try visiblePages.map { page in (page,try offsets.map { try read(page*0x80000+$0,512) }) }
         var failure: Error?
         var switched = false
         do {
@@ -75,7 +88,15 @@ final class BankedROMReader {
             let first = try offsets.map { try read(window + $0, 512) }
             let second = try offsets.map { try read(window + $0, 512) }
             switched = first == expected && second == expected && original != expected
-            // Check every additional page-address bit needed by this game's size.
+            // Prove the remaining low page bits against already visible ROM,
+            // including bank boundaries. This catches stuck bits and partial mappers.
+            for (page,expectedPage) in visible where page >= 2 && switched {
+                try select(register,UInt8(page))
+                let selected = try offsets.map { try read(window+$0,512) }
+                let repeated = try offsets.map { try read(window+$0,512) }
+                switched = selected == expectedPage && repeated == selected
+            }
+            // Check every additional page-address bit in the supported scan range.
             // Stable reads alone would also accept a reader that silently wraps at 4 MiB.
             var highPage = 8
             while highPage * 0x80000 < size, switched {
@@ -97,6 +118,9 @@ final class BankedROMReader {
             throw FlashMDError.invalid("ROM mapping could not be restored. Unplug USB before moving the cartridge.")
         }
         if let failure { throw failure }
+        if switched {
+            restorationWitnesses = [(0,header)] + offsets.enumerated().map { (window+$0.element,original[$0.offset]) }
+        }
         return switched
     }
 
@@ -111,9 +135,9 @@ final class BankedROMReader {
                 try Task.checkCancellation()
                 let position = offset + output.count
                 let page = position / 0x80000, within = position % 0x80000
-                let length = min(count - output.count, 32768, 0x80000 - within)
+                let length = min(count - output.count, transferBytes, 0x80000 - within)
                 try select(register, UInt8(page))
-                let data = try read(window + within, length)
+                let data = try readTransfer(window + within, length)
                 guard data.count == length else { throw FlashMDError.invalid("Incomplete bank read. Scan again.") }
                 output.append(data)
             }

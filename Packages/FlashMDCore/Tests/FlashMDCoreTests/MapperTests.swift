@@ -7,6 +7,7 @@ private final class MapperBus {
     var selected: Int
     var ignoresWrites = false
     var pageMask = 63
+    var pierMirroredUpperWindows = false
     var failRead = false
     var writes: [(Int, UInt8)] = []
     var rom: Data
@@ -25,23 +26,30 @@ private final class MapperBus {
     func read(_ address: Int, _ count: Int) throws -> Data {
         if failRead { throw FlashMDError.timeout }
         let window = mapper == .pierSolar ? 0x280000 : 0x380000
-        let offset = (window..<window+0x80000).contains(address) ? selected * 0x80000 + address-window : address
-        return Data(rom[offset..<offset+count])
+        let offset: Int
+        if pierMirroredUpperWindows, (0x300000..<0x400000).contains(address) { offset = address % 0x80000 }
+        else { offset = (window..<window+0x80000).contains(address) ? selected * 0x80000 + address-window : address }
+        var data = Data(repeating:0xFF,count:count)
+        if offset < rom.count {
+            let available = min(count,rom.count-offset)
+            data.replaceSubrange(0..<available,with:rom[offset..<offset+available])
+        }
+        return data
     }
     func reader() -> BankedROMReader {
         BankedROMReader(mapper:mapper,size:rom.count,select:select,read:read)
     }
 }
 
-@Test func mapperDetectionUsesKnownSignaturesAndDemonsRevision() throws {
+@Test func mapperDetectionUsesProtocolSignaturesWithoutRevisionSizes() throws {
     var header = fixtureROM(save:false)
     header.replaceSubrange(0x100..<0x110,with:Data("SEGA DOA        ".utf8))
     header[0x18E] = 0x6E; header[0x18F] = 0x1E
     let doa = try ROMMetadata.parse(header)
     #expect(ROMMapper.detect(doa) == .segaSSF2)
-    #expect(ROMMapper.segaSSF2.size(doa) == 0xEA0000)
+    #expect(ROMMapper.segaSSF2.scanLimit == 0x1000000)
     header[0x18E] = 0x12
-    #expect(ROMMapper.segaSSF2.size(try ROMMetadata.parse(header)) == nil)
+    #expect(ROMMapper.detect(try ROMMetadata.parse(header)) == .segaSSF2)
     header.replaceSubrange(0x100..<0x110,with:Data("SEGA SSF        ".utf8))
     #expect(ROMMapper.detect(try ROMMetadata.parse(header)) == .segaSSF2)
     #expect(ROMMapper.detect(try ROMMetadata.parse(fixtureROM())) == .linear)
@@ -49,10 +57,33 @@ private final class MapperBus {
     retail[0x18E] = 0xE0; retail[0x18F] = 0x17
     let retailMetadata = try ROMMetadata.parse(retail)
     #expect(ROMMapper.detect(retailMetadata) == .segaSSF2)
-    #expect(ROMMapper.segaSSF2.size(retailMetadata) == 0x500000)
+    #expect(ROMMapper.segaSSF2.scanLimit == 0x1000000)
     var pier = fixtureROM(save:false,title:"PIER SOLAR")
     pier.replaceSubrange(0x180..<0x18E,with:Data("GM T-574023-00".utf8))
     #expect(ROMMapper.detect(try ROMMetadata.parse(pier)) == .pierSolar)
+}
+
+@Test func daemonClawCreditsDoNotReplaceTheGameTitleAndRevisionsShareProtocol() throws {
+    var header = fixtureROM(save:false,title:"DAEMON CLAW")
+    header.replaceSubrange(0x100..<0x110,with:Data("SEGA DOA        ".utf8))
+    header.replaceSubrange(0x150..<0x180,with:Data("NEOFID STUDIOS BITBEAM CANNON".utf8) + Data(repeating:32,count:19))
+    header.replaceSubrange(0x1A4..<0x1A8,with:Data([0,0x3F,0xFF,0xFF]))
+    header[0x18E] = 0x7B; header[0x18F] = 0x9B
+    let metadata = try ROMMetadata.parse(header)
+    #expect(metadata.title == "DAEMON CLAW")
+    #expect(metadata.internationalTitle == "NEOFID STUDIOS BITBEAM CANNON")
+    #expect(ROMMapper.detect(metadata) == .segaSSF2)
+    #expect(ROMMapper.segaSSF2.scanLimit == 0x1000000)
+    #expect(OperationRunner.backupName(for:metadata.title) == "Daemon Claw")
+    header[0x18F] = 0x9C
+    #expect(ROMMapper.detect(try ROMMetadata.parse(header)) == .segaSSF2)
+    // Revision checksums do not control the supported mapper range.
+    header[0x18E] = 0x6E; header[0x18F] = 0x1E
+    #expect(ROMMapper.detect(try ROMMetadata.parse(header)) == .segaSSF2)
+    header.replaceSubrange(0x100..<0x110,with:Data("SEGA MEGA DRIVE ".utf8))
+    #expect(ROMMapper.detect(try ROMMetadata.parse(header)) == .segaSSF2)
+    let regular = try ROMMetadata.parse(fixtureROM(save:false,title:"TEST GAME"))
+    #expect(regular.title == regular.internationalTitle && ROMMapper.detect(regular) == .linear)
 }
 
 @Test(arguments:[ROMMapper.segaSSF2,.pierSolar])
@@ -80,6 +111,30 @@ func mappedReadsCrossBanksAndRestoreOriginalWindow(mapper: ROMMapper) throws {
     missingUpperBit.pageMask = 15
     #expect(try !missingUpperBit.reader().qualify())
     #expect(missingUpperBit.selected == 7)
+}
+
+@Test func aStuckLowPageBitCannotPassQualificationOrHideFailedRestoration() throws {
+    let bus = MapperBus(.segaSSF2,bytes:0x800000)
+    bus.pageMask = 61 // Page one works; the second page-selection bit does not.
+    #expect(throws:FlashMDError.self) { try bus.reader().qualify() }
+    #expect(bus.writes.contains { $0.1 == 2 })
+}
+
+@Test func pierSolarQualificationUsesFixedPagesRatherThanMirroredUpperWindows() throws {
+    let bus = MapperBus(.pierSolar,bytes:0x800000)
+    bus.pierMirroredUpperWindows = true
+    let reader = bus.reader()
+    #expect(try reader.qualify())
+    let bytes = try reader.readROM(offset:0x600000,count:32768)
+    #expect(bytes == Data(bus.rom[0x600000..<0x608000]))
+    #expect(bus.selected == 0)
+}
+
+@Test func mappingChangesAfterQualificationAreDetectedOnRestoration() throws {
+    let bus = MapperBus(.segaSSF2,bytes:0x800000), reader = bus.reader()
+    #expect(try reader.qualify())
+    bus.rom[0] ^= 1
+    #expect(throws:FlashMDError.self) { try reader.readROM(offset:0x400000,count:512) }
 }
 
 @Test func mapperReadFailureRestoresAndBoundsLastPartialBank() throws {
@@ -154,6 +209,7 @@ private func nativeMapperBus(_ mapper: ROMMapper) -> MapperBus {
     } else {
         bus.rom.replaceSubrange(0x150..<0x150+10,with:Data("PIER SOLAR".utf8))
         bus.rom.replaceSubrange(0x180..<0x18E,with:Data("GM T-574023-00".utf8))
+        bus.rom.replaceSubrange(0x1B0..<0x1BC,with:Data([0x45,0x50]) + Data(count:10))
     }
     let end = bus.rom.count - 1
     for index in 0..<4 { bus.rom[0x1A4+index] = UInt8(truncatingIfNeeded:end >> (24-index*8)) }
@@ -164,13 +220,18 @@ private func nativeMapperBus(_ mapper: ROMMapper) -> MapperBus {
 func nativeAutomaticMappedBackupExportsEveryBankAndVerifies(mapper: ROMMapper) throws {
     let bus = nativeMapperBus(mapper), transport = MapperTransport(bus)
     let device = try FlashKitDevice(transport:transport,path:"test")
+    // ROM-only wire model deliberately has no serial-save peripheral.
+    device.pierSolarSaveEnabled = false
     let snapshot = try device.inspect(profile:.automatic)
     #expect(snapshot.mapper == mapper); #expect(snapshot.romAccess == .banked)
-    #expect(snapshot.romReadLimit == bus.rom.count)
+    #expect(snapshot.romReadLimit == mapper.scanLimit)
     #expect(!snapshot.canWrite); #expect(snapshot.saveLayout == nil)
+    #expect(snapshot.saveStatus == (mapper == .pierSolar ? .unsupported : .none))
     let folder = try tempFolder()
     defer { try? FileManager.default.removeItem(at:folder) }
-    let request = try BackupRequest(cartridge:snapshot,romBytes:bus.rom.count,saveLayout:nil,verify:false,destination:folder)
+    let analysis = try ROMContentAnalysis.read(device:device,cartridge:snapshot,progress:{_ in})
+    #expect(analysis.suggestedBytes == bus.rom.count)
+    let request = try BackupRequest(cartridge:snapshot,romBytes:analysis.suggestedBytes,saveLayout:nil,verify:false,destination:folder,contentAnalysis:analysis)
     let result = try OperationRunner.backup(device:device,request:request,progress:{_ in})
     let artifact = try #require(result.manifest.artifacts.first)
     #expect(artifact.verified); #expect(result.manifest.mapper == mapper)
@@ -213,7 +274,11 @@ func referenceROMReplaysThroughNativeMapperWithoutHardware() throws {
     let device = try FlashKitDevice(transport:MapperTransport(bus),path:"offline-reference")
     let snapshot = try device.inspect(profile:.automatic)
     #expect(snapshot.romAccess == .banked)
-    #expect(snapshot.romReadLimit == reference.count)
+    #expect(snapshot.romReadLimit == mapper.scanLimit)
+    let analysis = try ROMContentAnalysis.read(device:device,cartridge:snapshot,progress:{_ in})
+    let expected = try ROMContentAnalysis.analyze(reference,headerBytes:snapshot.romSize?.bytes)
+    #expect(analysis.suggestedBytes == expected.suggestedBytes)
+    #expect(analysis.lastNonErasedByte == expected.lastNonErasedByte)
     var result = Data()
     for offset in stride(from:0,to:reference.count,by:32768) {
         result.append(try device.readROM(offset:offset,count:min(32768,reference.count-offset)))
@@ -227,4 +292,38 @@ func referenceROMReplaysThroughNativeMapperWithoutHardware() throws {
     let device = try FlashKitDevice(transport:transport,path:"test")
     #expect(throws:(any Error).self) { try device.inspect(profile:.automatic,mapper:.pierSolar) }
     #expect(bus.writes.isEmpty)
+}
+
+@Test func unknownSSF2GameScansPastEmptyBanksAndKeepsLaterData() throws {
+    let bus = nativeMapperBus(.segaSSF2)
+    bus.rom.append(Data(repeating:0xFF,count:0x1000000-bus.rom.count))
+    bus.rom.replaceSubrange(0x120..<0x180,with:Data(repeating:32,count:96))
+    bus.rom.replaceSubrange(0x150..<0x150+14,with:Data("NEW MAPPER ROM".utf8))
+    bus.rom[0x18E] = 0x12; bus.rom[0x18F] = 0x34
+    bus.rom[0xC80000] = 0xAB // A used bank after fifteen blank banks.
+    let device = try FlashKitDevice(transport:MapperTransport(bus),path:"new-ssf2")
+    let snapshot = try device.inspect(profile:.automatic)
+    #expect(snapshot.canBackupROM && snapshot.romReadLimit == 0x1000000)
+    let analysis = try ROMContentAnalysis.read(device:device,cartridge:snapshot,progress:{_ in})
+    #expect(analysis.scannedBytes == 0x1000000)
+    #expect(analysis.lastNonErasedByte == 0xC80000)
+    #expect(analysis.suggestedBytes == 0xCA0000)
+    #expect(bus.selected == 7)
+}
+
+@Test func bankedSuggestedExportRejectsNewDataInOmittedBanksBeforePublishing() throws {
+    let bus = nativeMapperBus(.segaSSF2)
+    bus.rom.append(Data(repeating:0xFF,count:0x1000000-bus.rom.count))
+    let device = try FlashKitDevice(transport:MapperTransport(bus),path:"changed-tail")
+    let snapshot = try device.inspect(profile:.automatic)
+    let analysis = try ROMContentAnalysis.read(device:device,cartridge:snapshot,progress:{_ in})
+    #expect(analysis.suggestedBytes == 0x500000)
+    let folder = try tempFolder()
+    defer { try? FileManager.default.removeItem(at:folder) }
+    let request = try BackupRequest(cartridge:snapshot,romBytes:analysis.suggestedBytes,saveLayout:nil,
+        verify:false,destination:folder,contentAnalysis:analysis)
+    bus.rom[0xA00000] = 0xAB
+    #expect(throws:OperationFailure.self) { try OperationRunner.backup(device:device,request:request,progress:{_ in}) }
+    #expect(try FileManager.default.contentsOfDirectory(atPath:folder.path).isEmpty)
+    #expect(bus.selected == 7)
 }

@@ -39,6 +39,17 @@ import Foundation
     #expect(metadata.domesticTitle.hasPrefix("ソレイユ")); #expect(metadata.declaredROMBytes == nil)
     #expect(metadata.productCode == "GM 00000000-00")
 }
+@Test func westernHeaderSymbolsArePreservedWhenShiftJISIsInvalid() throws {
+    var data = fixtureROM()
+    let title = Data("PIER SOLAR".utf8) + Data([0x99])
+        + Data("&THE GREAT ARCHITECTS".utf8) + Data([0xA9])
+        + Data(" WaterMelon".utf8) + Data([0x99])
+    data.replaceSubrange(0x150..<0x180,with:Data(repeating:32,count:48))
+    data.replaceSubrange(0x150..<0x150+title.count,with:title)
+    let metadata = try ROMMetadata.parse(data)
+    #expect(metadata.title == "PIER SOLAR™&THE GREAT ARCHITECTS© WaterMelon™")
+    #expect(metadata.rawHeader == Data(data[0x100..<0x200]))
+}
 @Test func hexadecimalRegionsAndChecksumMismatch() throws {
     var data = fixtureROM(); data.replaceSubrange(0x1F0..<0x200,with:Data(repeating:32,count:16)); data[0x1F0] = 0x44; data[1000] ^= 1
     let image = try ROMImage(data:data)
@@ -56,6 +67,13 @@ import Foundation
     #expect(throws:(any Error).self) { try SRAMLayout(start:0,end:Int.max,lane:1) }
     var data = fixtureROM(); data[0x1B3] = 0x40
     let metadata = try ROMMetadata.parse(data); #expect(metadata.saveLayout == nil); #expect(metadata.saveWarning != nil)
+}
+@Test func EPSaveDeclarationIsUnsupportedRatherThanMissingOrSRAM() throws {
+    var data = fixtureROM(save:false)
+    data.replaceSubrange(0x1B0..<0x1BC,with:Data([0x45,0x50]) + Data(count:10))
+    let metadata = try ROMMetadata.parse(data)
+    #expect(metadata.saveLayout == nil && metadata.saveWarning != nil)
+    #expect(metadata.rawHeader == Data(data[0x100..<0x200]))
 }
 @Test func topAndBottomBootGeometry() throws {
     let bottom = try fixtureGeometry(), top = try fixtureGeometry(top:true)
@@ -95,4 +113,15 @@ import Foundation
         let packed = Data((0..<layout.activeBytes).map { UInt8($0) })
         #expect(try layout.pack(layout.rawRepresentation(packed,format:.packed)) == packed)
     }
+}
+
+@Test(arguments:[UInt8(0xF8),0xF0,0xE0])
+func saveTypeDeclaresTheLaneEvenWhenHeaderUsesWholeBusWindow(type: UInt8) throws {
+    var header = fixtureROM()
+    header[0x1B2] = type
+    header.replaceSubrange(0x1B4..<0x1BC,with:Data([0,0x20,0,0,0,0x20,0xFF,0xFF]))
+    let metadata = try ROMMetadata.parse(header), layout = try #require(metadata.saveLayout)
+    #expect(layout.lane == (type == 0xE0 ? nil : type == 0xF8 ? 1 : 0))
+    #expect(layout.windowBytes == 65536)
+    #expect(layout.activeBytes == (type == 0xE0 ? 65536 : 32768))
 }

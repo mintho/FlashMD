@@ -32,6 +32,7 @@ public struct MemoryMeasurement: Sendable, Equatable, Codable {
 public struct CartridgeConfiguration: Codable, Sendable, Equatable {
     public let romCapacity: Int
     public let saveLayout: SRAMLayout?
+    /// Conservative programming capacity; automatic reads use the separate scan range.
     public static func inferredCapacity(geometry: FlashGeometry, saveLayout: SRAMLayout?) -> MemoryMeasurement {
         .init(bytes:min(geometry.capacity,0x400000,saveLayout?.base ?? 0x400000),source:.estimated)
     }
@@ -54,6 +55,7 @@ public struct CartridgeSnapshot: Sendable, Equatable {
     public let rawHeader: Data?
     public let geometry: FlashGeometry?
     public let saveLayout: SRAMLayout?
+    public let serialSave: SerialSaveConfiguration?
     public let identity: String
     public let fingerprint: String
     public let warning: String?
@@ -63,13 +65,35 @@ public struct CartridgeSnapshot: Sendable, Equatable {
     public let mapperSelection: ROMMapper
     public let romAccess: ROMAccess
     public let mappedROMBytes: Int?
+    /// Read-only scan range. A header's save address is not proof that ROM ends there.
+    public let linearROMReadBytes: Int?
     public let mapperMessage: String?
     public let readerKind: ProgrammerKind
     public let saveWriteSupported: Bool
+    public let saveStatus: SaveMemoryStatus
+    public var canBackupSave: Bool {
+        if serialSave != nil { return serialSave == .pierSolar && saveLayout == nil && mapper == .pierSolar && romAccess == .banked && saveStatus == .readOnly && !isDemo }
+        return saveLayout != nil && (saveStatus == .confirmed || saveStatus == .readOnly || saveStatus == .manual)
+    }
     public var canBackupROM: Bool { romAccess != .unavailable }
     public var canWrite: Bool { mapper == .linear && romAccess == .linear && !isDemo && geometry?.supported == true && flashCapacity != nil }
-    public var romReadLimit: Int { mappedROMBytes ?? flashCapacity?.bytes ?? min(0x400000,saveLayout?.base ?? 0x400000) }
-    public var canRestoreSave: Bool { mapper == .linear && romAccess == .linear && !isDemo && saveLayout != nil && saveLayout?.lane != 0 && saveWriteSupported }
+    public var romReadLimit: Int { mappedROMBytes ?? linearROMReadBytes ?? flashCapacity?.bytes ?? 0x400000 }
+    /// Programming capacity is independent of the wider read-only scan range.
+    /// WritePlan also rejects erase/program ranges that overlap configured SRAM.
+    public var romWriteLimit: Int { min(romReadLimit,flashCapacity?.bytes ?? 0,metadata?.saveLayout?.base ?? 0x400000) }
+    public var canRestoreSave: Bool { serialSave == nil && mapper == .linear && romAccess == .linear && !isDemo && saveStatus == .confirmed && saveLayout != nil && saveLayout?.lane != 0 && saveWriteSupported }
+    /// Permanently mapped SRAM needs an active check inside the approved write
+    /// flow. This never authorizes direct backend writes or scan-time probing.
+    public var canCheckSaveWriting: Bool {
+        guard readerKind == .flashKit, mapper == .linear, romAccess == .linear, !isDemo,
+              saveStatus == .readOnly, geometry?.supported == true,
+              let layout = saveLayout, layout == metadata?.saveLayout,
+              metadata?.saveWarning == nil, layout.base == 0x200000, layout.lane == 1,
+              (64...65536).contains(layout.windowBytes),
+              let declared = metadata?.declaredROMBytes, declared <= layout.base else { return false }
+        return true
+    }
+    public var canStartSaveWrite: Bool { canRestoreSave || canCheckSaveWriting }
 
     public func applying(_ override: CartridgeConfiguration?) -> CartridgeSnapshot {
         guard let override, mapper == .linear, romAccess == .linear else { return self }
@@ -77,10 +101,23 @@ public struct CartridgeSnapshot: Sendable, Equatable {
         let configurationWarning = readerKind == .mdDumper && override.saveLayout != nil && layout == nil
             ? "This reader supports odd-lane SRAM only. Choose odd lane in Advanced Settings." : warning
         let capacity = MemoryMeasurement(bytes:min(override.romCapacity,geometry?.capacity ?? 0x400000),source:.profile)
+        let configuredSaveStatus: SaveMemoryStatus
+        if layout == nil { configuredSaveStatus = .none }
+        else if layout == saveLayout && saveStatus == .confirmed { configuredSaveStatus = .confirmed }
+        else { configuredSaveStatus = .manual }
         return .init(title:title,regions:regions,romSize:romSize,flashCapacity:capacity,
             rawSaveWindow:layout.map { .init(bytes:$0.windowBytes,source:.profile) },isDemo:isDemo,
-            metadata:metadata,geometry:geometry,saveLayout:layout,identity:identity,fingerprint:fingerprint,
-            warning:configurationWarning,profile:profile,rawHeader:rawHeader,configurationOverride:override,mapper:mapper,mapperSelection:mapperSelection,romAccess:romAccess,mappedROMBytes:mappedROMBytes,mapperMessage:mapperMessage,readerKind:readerKind,saveWriteSupported:readerKind == .mdDumper ? layout?.activeBytes.isMultiple(of:32) == true : saveWriteSupported)
+            metadata:metadata,geometry:geometry,saveLayout:layout,serialSave:serialSave,identity:identity,fingerprint:fingerprint,
+            warning:configurationWarning,profile:profile,rawHeader:rawHeader,configurationOverride:override,mapper:mapper,mapperSelection:mapperSelection,romAccess:romAccess,mappedROMBytes:mappedROMBytes,mapperMessage:mapperMessage,readerKind:readerKind,saveWriteSupported:saveWriteSupported,linearROMReadBytes:capacity.bytes,saveStatus:configuredSaveStatus)
+    }
+    func withSaveStatus(_ status: SaveMemoryStatus) -> CartridgeSnapshot {
+        .init(title:title,regions:regions,romSize:romSize,flashCapacity:flashCapacity,rawSaveWindow:rawSaveWindow,
+            isDemo:isDemo,metadata:metadata,geometry:geometry,saveLayout:saveLayout,serialSave:serialSave,identity:identity,fingerprint:fingerprint,
+            warning:warning,profile:profile,rawHeader:rawHeader,configurationOverride:configurationOverride,
+            mapper:mapper,mapperSelection:mapperSelection,romAccess:romAccess,mappedROMBytes:mappedROMBytes,
+            mapperMessage:mapperMessage,readerKind:readerKind,
+            saveWriteSupported:readerKind == .mdDumper ? status == .confirmed && saveLayout?.activeBytes.isMultiple(of:32) == true : saveWriteSupported,
+            linearROMReadBytes:linearROMReadBytes,saveStatus:status)
     }
 
     public init(
@@ -93,6 +130,7 @@ public struct CartridgeSnapshot: Sendable, Equatable {
         metadata: ROMMetadata? = nil,
         geometry: FlashGeometry? = nil,
         saveLayout: SRAMLayout? = nil,
+        serialSave: SerialSaveConfiguration? = nil,
         identity: String = "",
         fingerprint: String = "",
         warning: String? = nil,
@@ -105,11 +143,15 @@ public struct CartridgeSnapshot: Sendable, Equatable {
         mappedROMBytes: Int? = nil,
         mapperMessage: String? = nil,
         readerKind: ProgrammerKind = .flashKit,
-        saveWriteSupported: Bool = true
+        saveWriteSupported: Bool = true,
+        linearROMReadBytes: Int? = nil,
+        saveStatus: SaveMemoryStatus? = nil
     ) {
         self.readerKind = readerKind; self.saveWriteSupported = saveWriteSupported
+        self.saveStatus = saveStatus ?? (metadata?.saveWarning != nil ? .unsupported : saveLayout != nil || metadata?.saveLayout != nil ? .declared : .none)
         self.mapper = mapper; self.mapperSelection = mapperSelection; self.romAccess = romAccess
         self.mappedROMBytes = mappedROMBytes; self.mapperMessage = mapperMessage
+        self.linearROMReadBytes = linearROMReadBytes
         self.configurationOverride = configurationOverride
         self.title = title
         self.regions = regions
@@ -118,7 +160,7 @@ public struct CartridgeSnapshot: Sendable, Equatable {
         self.rawSaveWindow = rawSaveWindow
         self.isDemo = isDemo
         self.rawHeader = rawHeader ?? metadata?.rawHeader
-        self.metadata = metadata; self.geometry = geometry; self.saveLayout = saveLayout
+        self.metadata = metadata; self.geometry = geometry; self.saveLayout = saveLayout; self.serialSave = serialSave
         self.identity = identity; self.fingerprint = fingerprint; self.warning = warning; self.profile = profile
     }
 }

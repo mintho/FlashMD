@@ -24,6 +24,35 @@ func tempFolder() throws -> URL {
     let url = FileManager.default.temporaryDirectory.appendingPathComponent("FlashMDTests-\(UUID().uuidString)",isDirectory:true)
     try FileManager.default.createDirectory(at:url,withIntermediateDirectories:true); return url
 }
+func testWrite(device: any CartridgeDevice, plan: WritePlan, progress: ProgressHandler) throws -> OperationResult {
+    let directory = try tempFolder()
+    defer { try? FileManager.default.removeItem(at:directory) }
+    return try OperationRunner.write(device:device,plan:plan,progress:progress,recoveryDirectory:directory)
+}
+
+func linearInspectionResponses(header: Data, cfiBus: Data) throws -> [Data] {
+    var responses = [Data([1,1]),header,cfiBus]
+    if cfiBus[0x21] == 0x51 {
+        responses += [Data([0,1]),Data([0x22,0x7E]),Data([0x22,0x10]),Data([0x22,1])]
+    }
+    responses.append(header)
+    if let layout = try ROMMetadata.parse(header).saveLayout {
+        let counts = stride(from:0,to:layout.windowBytes,by:32768).map { min(32768,layout.windowBytes-$0) }
+        let rom = counts.map { Data(repeating:0xFF,count:$0) }
+        responses += rom + rom
+        for _ in 0..<2 {
+            for count in counts {
+                responses += Array(repeating:Data(count:64),count:4)
+                responses += Array(repeating:Data(repeating:0xFF,count:min(64,layout.windowBytes)),count:4)
+                responses.append(Data(repeating:0xA5,count:count))
+                responses += Array(repeating:Data(count:64),count:4)
+                responses += Array(repeating:Data(repeating:0xFF,count:min(64,layout.windowBytes)),count:2)
+            }
+        }
+        responses += rom
+    }
+    return responses
+}
 final class MemoryDevice: CartridgeDevice, @unchecked Sendable {
     let identity = "test-port · 0101"
     var rom:Data
@@ -38,23 +67,30 @@ final class MemoryDevice: CartridgeDevice, @unchecked Sendable {
     var failProgram = false
     var corruptRestore = false
     var mismatchSecondRead = false
+    var unstableROMFrom: Int?
+    var saveReadsROM = false
+    var saveReadCount = 0
+    var saveStatus: SaveMemoryStatus = .confirmed
     var erasures = 0
     var programs = 0
     var restores = 0
     var resets = 0
+    var writeChecks = 0
+    var failWriteCheck = false
     var reads:[Int] = []
     init() { rom = fixtureROM() + Data(repeating:0xFF,count:0x400000-65536) }
     func inspect(profile:CartridgeProfile) throws -> CartridgeSnapshot {
         let metadata = try ROMMetadata.parse(rom), geometry = try fixtureGeometry()
         let layout = profile == .automatic ? metadata.saveLayout : profile.saveLayout
         let capacity = profile == .automatic ? CartridgeConfiguration.inferredCapacity(geometry:geometry,saveLayout:layout) : profile.usableCapacity(for:geometry)
-        return .init(title:metadata.title,regions:metadata.regions,romSize:metadata.declaredROMBytes.map { .init(bytes:$0,source:.header) },flashCapacity:capacity,rawSaveWindow:.init(bytes:65536,source:.profile),metadata:metadata,geometry:geometry,saveLayout:layout,identity:identity,fingerprint:changedIdentity ? "changed" : hash(Data(rom.prefix(512))),profile:profile)
+        return .init(title:metadata.title,regions:metadata.regions,romSize:metadata.declaredROMBytes.map { .init(bytes:$0,source:.header) },flashCapacity:capacity,rawSaveWindow:.init(bytes:65536,source:.profile),metadata:metadata,geometry:geometry,saveLayout:layout,identity:identity,fingerprint:changedIdentity ? "changed" : hash(Data(rom.prefix(512))),profile:profile,linearROMReadBytes:profile == .automatic ? min(geometry.capacity,0x400000) : nil,saveStatus:layout == nil ? .none : saveStatus)
     }
     func readROM(offset:Int,count:Int) throws -> Data { reads.append(count)
         var block = Data(rom[offset..<offset+count-(shortRead ? 1 : 0)])
         if mismatchSecondRead, reads.count > 2, !block.isEmpty { block[0] ^= 1 }
+        if let unstableROMFrom, offset >= unstableROMFrom, reads.count.isMultiple(of:2), !block.isEmpty { block[0] ^= 1 }
         return block }
-    func readSRAM(layout:SRAMLayout,offset:Int,count:Int) throws -> Data { if failSaveRead { throw FlashMDError.disconnected }; return Data(sram[(layout.base-0x200000+offset)..<(layout.base-0x200000+offset+count)]) }
+    func readSRAM(layout:SRAMLayout,offset:Int,count:Int) throws -> Data { saveReadCount += 1; if failSaveRead { throw FlashMDError.disconnected }; if saveReadsROM { return Data(rom[layout.base+offset..<layout.base+offset+count]) }; return Data(sram[(layout.base-0x200000+offset)..<(layout.base-0x200000+offset+count)]) }
     func erase(sector:FlashSector) throws { if failErase { throw FlashMDError.timeout }; erasures += 1; rom.replaceSubrange(sector.offset..<sector.offset+sector.bytes,with:Data(repeating:0xFF,count:sector.bytes)); if changeSaveOnErase { sram[1] = 0x5A } }
     func program(offset:Int,data:Data) throws { if failProgram { throw FlashMDError.disconnected }; programs += 1; rom.replaceSubrange(offset..<offset+data.count,with:data); if corruptProgram { rom[offset] ^= 1 } }
     func restore(layout:SRAMLayout,raw:Data) throws {
@@ -63,5 +99,13 @@ final class MemoryDevice: CartridgeDevice, @unchecked Sendable {
         if corruptRestore { sram[layout.lane ?? 0] ^= 1 }
     }
     func reset() throws { resets += 1 }
+    func checkSRAMWriting(layout: SRAMLayout, originalRaw: Data) throws {
+        writeChecks += 1
+        if failWriteCheck { throw FlashMDError.invalid("SRAM writing could not be verified.") }
+        let original = try layout.pack(originalRaw)
+        try SRAMWriteProbe.check(original:original,read:{ try layout.pack(Data(self.sram.prefix(layout.windowBytes))) },writePrefix:{ bytes in
+            for (index,value) in bytes.enumerated() { self.sram[index*2+1] = value }
+        },verifyROM:{})
+    }
     func close() {}
 }

@@ -15,6 +15,7 @@ struct CartridgeWorkspaceView: View {
     @State private var details = false
     @State private var fileDetails = false
     @State private var analysisDetails = false
+    @State private var editingTitle = false
 
     var body: some View {
         ZStack {
@@ -105,7 +106,7 @@ struct CartridgeWorkspaceView: View {
             VStack(spacing:12) {
                 Text(model.isInspecting ? "Getting to know your cartridge" : "Meet your cartridge.")
                     .font(.system(size:36,weight:.medium,design:.rounded)).multilineTextAlignment(.center)
-                Text(model.isInspecting ? model.scanStep : "Connect FlashKit or MD Dumper via USB, insert a cartridge,\nand scan to get started.")
+                Text(model.isInspecting ? model.scanStep : "Insert a cartridge with the programmer powered off.\nThen connect or turn it on, and scan to get started.")
                     .font(.system(size:15)).foregroundStyle(.secondary).multilineTextAlignment(.center).frame(minHeight:42)
             }
             scanButton(large:true).padding(.top,10)
@@ -139,7 +140,17 @@ struct CartridgeWorkspaceView: View {
                 CartridgeArtwork(scanning:false).frame(width:compact ? 85 : 125,height:compact ? 92 : 135)
                 VStack(alignment:.leading,spacing:8) {
                     Text("MEGA DRIVE / GENESIS").font(.system(size:10,weight:.bold)).tracking(2).foregroundStyle(flashViolet)
-                    Text(cartridge.title).font(.system(size:compact ? 24 : 28,weight:.semibold,design:.rounded)).fixedSize(horizontal:false,vertical:true)
+                    HStack(alignment:.firstTextBaseline,spacing:8) {
+                        Text(model.displayTitle(for:cartridge)).font(.system(size:compact ? 24 : 28,weight:.semibold,design:.rounded)).fixedSize(horizontal:false,vertical:true)
+                        Button { editingTitle = true } label: {
+                            Image(systemName:"pencil").font(.system(size:14,weight:.medium)).foregroundStyle(flashViolet)
+                                .frame(width:28,height:28).contentShape(Rectangle())
+                        }.buttonStyle(.plain).disabled(model.isBusy || model.showReview)
+                            .help("Edit cartridge title").accessibilityLabel("Edit cartridge title").accessibilityIdentifier("editCartridgeTitle")
+                            .popover(isPresented:$editingTitle) {
+                                CartridgeTitleEditor(model:model,cartridge:cartridge,isPresented:$editingTitle)
+                            }
+                    }
                     HStack(spacing:8) {
                         Text(cartridge.regions.isEmpty ? "No game region detected" : cartridge.regions.joined(separator:" · ")).foregroundStyle(.secondary)
                         if cartridge.metadata != nil {
@@ -154,12 +165,12 @@ struct CartridgeWorkspaceView: View {
                 scanButton(large:false)
             }
             HStack(spacing:0) {
-                metric(cartridge.mapper == .linear ? "ROM CAPACITY" : "COMPLETE ROM",cartridge.mappedROMBytes.map { formatBytes($0) } ?? cartridge.flashCapacity.map { formatBytes($0.bytes) } ?? "Unknown",note:cartridge.mapper != .linear ? cartridge.mapper.displayName : cartridge.isDemo ? "Sample data" : (cartridge.configurationOverride != nil || cartridge.profile != .automatic ? "Manual configuration" : "Automatically configured"))
+                metric(cartridge.mapper != .linear || cartridge.linearROMReadBytes != nil && cartridge.configurationOverride == nil ? "ROM SCAN RANGE" : "ROM CAPACITY",cartridge.canBackupROM ? formatBytes(cartridge.romReadLimit) : cartridge.mappedROMBytes.map { formatBytes($0) } ?? "Unknown",note:cartridge.mapper != .linear ? "\(cartridge.mapper.displayName) · includes unused space" : cartridge.isDemo ? "Sample data" : (cartridge.configurationOverride != nil || cartridge.profile != .automatic ? "Manual configuration" : "Includes unused space"))
                 Rectangle().fill(Color.primary.opacity(0.1)).frame(width:1,height:42)
                 metric("HEADER ROM SIZE",cartridge.romSize.map { formatBytes($0.bytes) } ?? "No valid header",note:"Declared by the game; may be incomplete")
                     .help("Declared by the game. Backups use the scan's suggested size unless you choose complete ROM.")
                 Rectangle().fill(Color.primary.opacity(0.1)).frame(width:1,height:42)
-                metric("SAVE MEMORY",cartridge.romAccess != .linear ? "Unavailable" : cartridge.saveLayout.map { formatBytes($0.activeBytes) + " SRAM" } ?? "None declared",note:cartridge.romAccess != .linear ? "Not supported for this mapper" : cartridge.saveLayout == nil ? "Override in Advanced Settings" : (cartridge.configurationOverride == nil && cartridge.profile == .automatic ? "From the game header" : "Manual configuration"))
+                metric("SAVE MEMORY",cartridge.serialSave?.displayName ?? (cartridge.saveLayout ?? cartridge.metadata?.saveLayout).map { formatBytes($0.activeBytes) + " SRAM" } ?? (cartridge.saveStatus == .unsupported ? "Unsupported save type" : "None declared"),note:cartridge.serialSave != nil ? (cartridge.canBackupSave ? "64 KiB address range · backup only" : "Save backup unavailable on this reader") : cartridge.canCheckSaveWriting ? "Write access checked before writing" : cartridge.saveStatus.explanation)
             }.padding(.vertical,compact ? 12 : 18).background(Color.primary.opacity(scheme == .dark ? 0.035 : 0.025),in:RoundedRectangle(cornerRadius:18))
         }.padding(.top,4)
     }
@@ -194,7 +205,7 @@ struct CartridgeWorkspaceView: View {
                 Text(message).font(.callout).foregroundStyle(model.cartridge?.canBackupROM == true ? Color.secondary : Color.orange)
             }
             if model.configurationPending {
-                Text("Configuration changed. Apply it in Advanced Settings before transferring.").font(.callout).foregroundStyle(.orange)
+                Text("Settings changed. Scan to use them.").font(.callout).foregroundStyle(.orange)
             }
         }.padding(22).background(panelBackground)
     }
@@ -216,23 +227,23 @@ struct CartridgeWorkspaceView: View {
             }
             HStack(spacing:12) {
                 selectionCard("Game ROM",subtitle:model.backupSizeDescription,symbol:"gamecontroller",selected:$model.backupROM,enabled:true)
-                selectionCard("SRAM data",subtitle:model.cartridge?.saveLayout.map { formatBytes($0.activeBytes) + " of save data" } ?? (model.cartridge?.romAccess == .linear ? "No SRAM configured" : "Unavailable for this mapper"),symbol:"externaldrive",selected:$model.backupSRAM,enabled:model.cartridge?.saveLayout != nil)
+                selectionCard(model.savePanelTitle,subtitle:model.backupSaveSubtitle,symbol:"externaldrive",selected:$model.backupSRAM,enabled:model.cartridge?.canBackupSave == true)
             }
-            if model.backupROM, model.cartridge?.mapper == .linear, let analysis = model.contentAnalysis, let suggested = analysis.suggestedBytes {
+            if model.backupROM, let analysis = model.contentAnalysis, let suggested = analysis.suggestedBytes {
                 HStack(spacing:12) {
                     VStack(alignment:.leading,spacing:3) {
                         Text("Suggested export · \(formatBytes(suggested))").font(.caption.weight(.semibold))
-                        Text("Estimated from the scan.").font(.caption2).foregroundStyle(.secondary)
+                        Text(analysis.hasUncertainRange ? "Some memory could not be identified." : "Estimated from the scan.").font(.caption2).foregroundStyle(.secondary)
                     }
                     Spacer(minLength:0)
                     Button("Details") { analysisDetails = true }.buttonStyle(.plain).foregroundStyle(flashViolet)
                         .popover(isPresented:$analysisDetails) { analysisSummary(analysis).padding(24).frame(width:420) }
                     Toggle("Back Up Complete ROM",isOn:Binding(get:{model.backupLength == .complete},set:{model.backupLength = $0 ? .complete : .suggested}))
-                        .toggleStyle(.switch).controlSize(.mini).fixedSize()
+                        .toggleStyle(.switch).controlSize(.mini).fixedSize().disabled(analysis.hasUncertainRange)
                 }.font(.caption)
             }
             HStack(alignment:.center) {
-                Text(model.verifyBackup ? "Files are verified after reading." : "Backup verification is off.").font(.caption).foregroundStyle(.secondary)
+                Text(model.backupWillBeVerified ? "Files are verified after reading." : "Backup verification is off.").font(.caption).foregroundStyle(.secondary)
                 Spacer()
                 Button("Back Up…") { model.startBackup() }.buttonStyle(FlashActionStyle()).disabled(!model.canBackup)
             }
@@ -242,13 +253,17 @@ struct CartridgeWorkspaceView: View {
     private func analysisSummary(_ analysis:ROMContentAnalysis) -> some View {
         VStack(alignment:.leading,spacing:14) {
             Text("ROM Content Analysis").font(.title2.weight(.semibold))
-            LabeledContent("Scanned range",value:formatBytes(analysis.scannedBytes))
+            LabeledContent("Checked range",value:formatBytes(analysis.scannedBytes))
+            if let requested = analysis.requestedScanBytes, requested != analysis.scannedBytes {
+                LabeledContent("Requested range",value:formatBytes(requested))
+            }
+            if let start = analysis.excludedROMStart { LabeledContent("Unconfirmed from",value:"0x" + String(start,radix:16).uppercased()) }
             LabeledContent("Header declaration",value:analysis.headerBytes.map(formatBytes) ?? "Unknown")
             if let suggested = analysis.suggestedBytes { LabeledContent("Suggested export",value:"\(suggested.formatted()) bytes") }
             LabeledContent("Erased end area (FF)",value:formatBytes(analysis.trailingErasedBytes))
             if let period = analysis.possibleMirrorBytes { LabeledContent("Possible repeated block",value:formatBytes(period)) }
             Text(analysis.explanation).font(.callout)
-            Text("An estimate: old data may look like game data. Complete ROM includes every accessible byte.").font(.caption).foregroundStyle(.secondary)
+            Text("Size is estimated. Repeated reads cannot prove that every ROM bank or other cartridge storage was included.").font(.caption).foregroundStyle(.secondary)
         }
     }
 
@@ -257,10 +272,10 @@ struct CartridgeWorkspaceView: View {
             Text(model.writeROM && !model.writeSRAM && model.cartridge?.saveLayout != nil ? "Write a game. Keep your existing saves." : "Choose what to write to your cartridge.").font(.callout).foregroundStyle(.secondary)
             HStack(spacing:12) {
                 writeFileCard("Game ROM",file:model.selectedROM,selected:$model.writeROM,enabled:model.cartridge?.canWrite == true,forROM:true)
-                writeFileCard("SRAM data",file:model.selectedSRAM,selected:$model.writeSRAM,enabled:model.cartridge?.canRestoreSave == true,forROM:false)
+                writeFileCard(model.savePanelTitle,file:model.selectedSRAM,selected:$model.writeSRAM,enabled:model.cartridge?.canStartSaveWrite == true,forROM:false)
             }
             if model.writeROM, let image = model.selectedROM?.image {
-                if let geometry = model.cartridge?.geometry, let bytes = try? geometry.programLength(model.clearUnusedROM ? (model.cartridge?.romReadLimit ?? image.data.count) : image.data.count) {
+                if let geometry = model.cartridge?.geometry, let bytes = try? geometry.programLength(model.clearUnusedROM ? (model.cartridge?.romWriteLimit ?? image.data.count) : image.data.count) {
                     let capacity = model.cartridge?.flashCapacity?.bytes ?? 0
                     Text("\(formatBytes(image.data.count)) ROM · \(formatBytes(capacity)) available")
                         .font(.caption).foregroundStyle(bytes <= capacity ? Color.secondary : Color.red)
@@ -275,7 +290,15 @@ struct CartridgeWorkspaceView: View {
                 Button("Write…") { model.prepareWrite() }.buttonStyle(FlashActionStyle()).disabled(!model.canReviewWrite)
             }
             if model.cartridge?.canWrite != true {
-                Text("ROM writing is not supported for this cartridge. Backup is available.").font(.caption).foregroundStyle(.secondary)
+                if model.canPrepareMDDumperROMWriting {
+                    HStack {
+                        Text("Identify the flash chip to enable ROM writing.").font(.caption).foregroundStyle(.secondary)
+                        Spacer()
+                        Button("Prepare ROM Writing…") { model.prepareMDDumperROMWriting() }
+                    }
+                } else {
+                    Text("ROM writing is not supported for this cartridge. Backup is available.").font(.caption).foregroundStyle(.secondary)
+                }
             }
         }.disabled(model.isBusy)
     }
@@ -343,79 +366,144 @@ struct CartridgeWorkspaceView: View {
             .accessibilityLabel(title).accessibilityValue(selected.wrappedValue && enabled ? "Selected" : "Not selected").accessibilityHint(subtitle)
     }
 
+    // A shared control width keeps every explanation at the same horizontal position.
+    private func advancedSetting<Control: View>(_ explanation: String, @ViewBuilder control: () -> Control) -> some View {
+        HStack(alignment:.center,spacing:20) {
+            control().frame(width:350,alignment:.leading)
+            Text(explanation).font(.caption).foregroundStyle(.secondary)
+                .frame(maxWidth:.infinity,alignment:.leading)
+                .fixedSize(horizontal:false,vertical:true)
+        }
+    }
+
+    private func advancedPicker<Selection: Hashable, Options: View>(_ title: String, selection: Binding<Selection>, selectedTitle: String, explanation: String, @ViewBuilder options: () -> Options) -> some View {
+        advancedSetting(explanation) {
+            HStack(spacing:12) {
+                Text(title).frame(width:150,alignment:.leading)
+                Menu {
+                    Picker(title,selection:selection,content:options).labelsHidden().pickerStyle(.inline)
+                } label: {
+                    HStack {
+                        Text(selectedTitle).lineLimit(1).truncationMode(.middle)
+                        Spacer(minLength:0)
+                        Image(systemName:"chevron.down").font(.system(size:10,weight:.semibold)).accessibilityHidden(true)
+                    }
+                    .foregroundStyle(flashViolet)
+                    .padding(.horizontal,10).padding(.vertical,5)
+                    .frame(width:188,alignment:.leading)
+                    .background(flashViolet.opacity(0.08),in:RoundedRectangle(cornerRadius:6))
+                    .contentShape(RoundedRectangle(cornerRadius:6))
+                }
+                .menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden)
+                .frame(width:188)
+                .accessibilityLabel(title).accessibilityValue(selectedTitle)
+            }
+        }
+    }
+
     private var advancedPanel: some View {
         VStack(alignment:.leading,spacing:16) {
             Text("Advanced Settings").font(.title3.weight(.semibold))
             VStack(alignment:.leading,spacing:8) {
                 Text("Cartridge configuration").font(.headline)
-                Picker("ROM mapper",selection:$model.mapper) {
+                advancedPicker("ROM mapper",selection:$model.mapper,selectedTitle:model.mapper.displayName,explanation:model.mapperExplanation) {
                     ForEach(ROMMapper.allCases) { Text($0.displayName).tag($0) }
                 }
-                Text("Automatic recognizes known games and checks bank switching. Change this only if detection is wrong.").font(.caption).foregroundStyle(.secondary)
-                Text(model.manualConfiguration ? "Use the memory settings for your cartridge board." : "Detected during scanning. Override if your board needs different settings.").font(.caption).foregroundStyle(.secondary).fixedSize(horizontal:false,vertical:true)
-                Picker("Configuration",selection:$model.profile) { ForEach(CartridgeProfile.allCases) { Text($0.displayName).tag($0) } }
-                    .disabled(model.manualConfiguration || (model.cartridge.map { $0.romAccess != .linear } ?? false))
-                Toggle("Override memory configuration",isOn:Binding(get:{model.manualConfiguration},set:{ value in if value { model.useDetectedConfiguration() }; model.manualConfiguration = value })).disabled(model.cartridge.map { $0.romAccess != .linear } ?? false)
+                advancedPicker("Configuration",selection:$model.profile,selectedTitle:model.profile.displayName,explanation:model.profileExplanation) {
+                    ForEach(CartridgeProfile.allCases) { Text($0.displayName).tag($0) }
+                }.disabled(model.manualConfiguration || model.memoryConfigurationUnavailable)
+                advancedSetting(model.memoryOverrideExplanation) {
+                    Toggle("Override memory configuration",isOn:Binding(get:{model.manualConfiguration},set:{ value in if value { model.useDetectedConfiguration() }; model.manualConfiguration = value }))
+                        .disabled(model.memoryConfigurationUnavailable)
+                }
                 if model.manualConfiguration {
-                    Picker("Accessible ROM capacity",selection:$model.capacityChoice) {
+                    advancedPicker("ROM capacity",selection:$model.capacityChoice,selectedTitle:formatBytes(model.capacityChoice),explanation:"Allows \(formatBytes(model.capacityChoice)) of accessible ROM.") {
                         ForEach([0x10000,0x20000,0x40000,0x80000,0x100000,0x200000,0x300000,0x400000],id:\.self) { Text(formatBytes($0)).tag($0) }
                         if ![0x10000,0x20000,0x40000,0x80000,0x100000,0x200000,0x300000,0x400000].contains(model.capacityChoice) { Text(formatBytes(model.capacityChoice)).tag(model.capacityChoice) }
                     }
-                    Text("Choose the ROM capacity accessible on your board. Maximum 4 MiB.").font(.caption).foregroundStyle(.secondary)
-                    Toggle("Cartridge has SRAM",isOn:$model.manualSave)
+                    advancedSetting(model.manualSave ? "Uses the SRAM addresses and byte lane below." : "No SRAM will be read or written.") {
+                        Toggle("Cartridge has SRAM",isOn:$model.manualSave)
+                    }
                     if model.manualSave {
-                        HStack(spacing:14) {
-                            VStack(alignment:.leading,spacing:5) { Text("Start address (hex)").font(.caption); TextField("200001",text:$model.saveStart).textFieldStyle(.roundedBorder).accessibilityLabel("SRAM start address in hexadecimal") }
-                            VStack(alignment:.leading,spacing:5) { Text("End address (hex, inclusive)").font(.caption); TextField("20FFFF",text:$model.saveEnd).textFieldStyle(.roundedBorder).accessibilityLabel("SRAM inclusive end address in hexadecimal") }
-                            Picker("Byte lane",selection:$model.saveLane) { Text("Odd (8-bit)").tag(1); Text("Even (read only)").tag(0); Text("Both (16-bit)").tag(2) }.frame(width:185)
+                        advancedSetting("Hex range, including the end address.") {
+                            HStack(spacing:12) {
+                                VStack(alignment:.leading,spacing:4) {
+                                    Text("SRAM start (hex)").font(.caption)
+                                    TextField("200001",text:$model.saveStart).textFieldStyle(.roundedBorder).accessibilityLabel("SRAM start address in hexadecimal")
+                                }
+                                VStack(alignment:.leading,spacing:4) {
+                                    Text("SRAM end (hex)").font(.caption)
+                                    TextField("20FFFF",text:$model.saveEnd).textFieldStyle(.roundedBorder).accessibilityLabel("SRAM inclusive end address in hexadecimal")
+                                }
+                            }
+                        }.help("Typical 32 KiB SRAM: 200001–20FFFF on the odd byte lane.")
+                        advancedPicker("Byte lane",selection:$model.saveLane,selectedTitle:model.saveLane == 2 ? "Both (16-bit)" : model.saveLane == 0 ? "Even (read only)" : "Odd (8-bit)",explanation:model.saveLaneExplanation) {
+                            Text("Odd (8-bit)").tag(1); Text("Even (read only)").tag(0); Text("Both (16-bit)").tag(2)
                         }
-                        Text("Typical 32 KiB SRAM: 200001–20FFFF, odd lane. For both lanes, use an even start and odd end.").font(.caption).foregroundStyle(.secondary)
                     }
                 }
                 if let geometry = model.cartridge?.geometry { Text("\(geometry.name) · \(formatBytes(geometry.capacity)) physical flash · \(geometry.sectors.count) erase sectors").font(.caption).foregroundStyle(.secondary) }
-                if model.configurationPending { Button("Apply Configuration") { Task { await model.refresh() } }.buttonStyle(.borderedProminent) }
+                if model.configurationPending { Text("Scan to use these settings.").font(.caption).foregroundStyle(.secondary) }
             }
             Divider().opacity(0.4)
             VStack(alignment:.leading,spacing:8) {
                 Text("Backup").font(.headline)
-                if let cartridge = model.cartridge, cartridge.romAccess != .linear {
-                    Text("Banked ROMs are backed up in full and verified.").font(.caption).foregroundStyle(.secondary)
+                if let cartridge = model.cartridge, cartridge.mapper != .linear {
+                    Text("Uses the scan’s suggested size. Banked ROMs are always verified.").font(.caption).foregroundStyle(.secondary)
                 } else {
-                    Picker("ROM size",selection:$model.backupLength) { ForEach(ROMBackupLength.allCases) { Text($0.title).tag($0) } }
-                    Text(model.backupLengthExplanation).font(.caption).foregroundStyle(.secondary)
+                    advancedPicker("ROM size",selection:$model.backupLength,selectedTitle:model.backupLength.title,explanation:model.backupLengthExplanation) {
+                        ForEach(ROMBackupLength.allCases) { Text($0.title).tag($0) }
+                    }
                     if model.backupLength == .custom {
-                        LabeledContent("ROM bytes to read") { TextField("2097152",text:$model.forcedROMSize).textFieldStyle(.roundedBorder).accessibilityLabel("ROM bytes to read") }
+                        advancedSetting("Byte count up to capacity; 2097152 = 2 MiB.") {
+                            HStack(spacing:12) {
+                                Text("ROM bytes to read").frame(width:150,alignment:.leading)
+                                TextField("2097152",text:$model.forcedROMSize).textFieldStyle(.roundedBorder).accessibilityLabel("ROM bytes to read").frame(width:188)
+                            }
+                        }
                         HStack {
                             Button("Use Header Size") { model.forcedROMSize = model.cartridge?.romSize.map { String($0.bytes) } ?? "" }.disabled(model.cartridge?.romSize == nil)
-                            Button("Use Capacity") { model.forcedROMSize = model.cartridge?.flashCapacity.map { String($0.bytes) } ?? "" }.disabled(model.cartridge?.flashCapacity == nil)
+                            Button("Use Scan Range") { model.forcedROMSize = model.cartridge.map { String($0.romReadLimit) } ?? "" }.disabled(model.cartridge?.canBackupROM != true)
                         }
-                        Text("Bytes to read, up to cartridge capacity. 2097152 = 2 MiB.").font(.caption).foregroundStyle(.secondary)
                     }
-                    Picker("SRAM export format",selection:$model.saveFormat) { Text(model.saveFormatTitle(.packed)).tag(SaveFormat.packed); Text(model.saveFormatTitle(.raw)).tag(SaveFormat.raw) }
-                    Text(model.saveFormatExplanation).font(.caption).foregroundStyle(.secondary)
-                    Toggle("Verify backup",isOn:$model.verifyBackup)
-                    Text("Reads twice and compares the results.").font(.caption).foregroundStyle(.secondary)
+                    advancedPicker("SRAM export format",selection:$model.saveFormat,selectedTitle:model.saveFormatTitle(model.saveFormat),explanation:model.saveFormatExplanation) {
+                        Text(model.saveFormatTitle(.packed)).tag(SaveFormat.packed); Text(model.saveFormatTitle(.raw)).tag(SaveFormat.raw)
+                    }
+                    advancedSetting(model.backupVerificationRequired ? "Required when ROM streaming is on." : model.verifyBackup ? "Reads twice and compares the results." : "Reads once, without a comparison.") {
+                        Toggle("Verify backup",isOn:Binding(get:{model.backupWillBeVerified},set:{model.verifyBackup = $0}))
+                            .disabled(model.backupVerificationRequired)
+                    }
                 }
             }
             Divider().opacity(0.4)
             VStack(alignment:.leading,spacing:8) {
                 Text("Writing").font(.headline)
-                Toggle("Clear unused ROM space",isOn:$model.clearUnusedROM)
-                Text("Erases cartridge ROM beyond the new game.").font(.caption).foregroundStyle(.secondary)
-                Picker("SRAM input format",selection:$model.saveImportFormat) { ForEach(SaveImportFormat.allCases) { Text($0.title).tag($0) } }
-                Text(model.saveImportFormat.explanation).font(.caption).foregroundStyle(.secondary)
+                advancedSetting(model.clearUnusedROM ? "Erases ROM beyond the new game." : "Keeps ROM beyond the new game intact.") {
+                    Toggle("Clear unused ROM space",isOn:$model.clearUnusedROM)
+                }
+                advancedPicker("SRAM input format",selection:$model.saveImportFormat,selectedTitle:model.saveImportFormat.title,explanation:model.saveImportFormat.explanation) {
+                    ForEach(SaveImportFormat.allCases) { Text($0.title).tag($0) }
+                }
             }
             Divider().opacity(0.4)
             VStack(alignment:.leading,spacing:8) {
                 Text("USB connection").font(.headline)
-                Toggle("Choose programmer manually",isOn:$model.portOverride)
+                if model.connectedProgrammer == .mdDumper {
+                    advancedSetting(model.mdDumperStreamingSupported ? "Used on the next scan or backup. Verification may limit the speed gain." : "Not yet tested with this reader’s firmware. Normal reads are used.") {
+                        Toggle("ROM streaming",isOn:$model.mdDumperStreaming)
+                            .disabled(!model.mdDumperStreamingSupported)
+                            .help("Tested on MD Dumper firmware 2.0, board 3. Other versions use normal reads.")
+                    }
+                }
+                advancedSetting(model.portOverride ? "Uses the programmer selected below." : "Finds a supported programmer automatically.") {
+                    Toggle("Choose programmer manually",isOn:$model.portOverride)
+                }
                 if model.portOverride {
-                    Picker("Programmer",selection:$model.selectedPort) {
+                    advancedPicker("Programmer",selection:$model.selectedPort,selectedTitle:model.ports.first(where:{ $0.id == model.selectedPort })?.name ?? "No USB programmers found",explanation:model.programmerExplanation) {
                         if model.ports.isEmpty { Text("No USB programmers found").tag("") }
                         ForEach(model.ports) { Text($0.name).tag($0.id) }
                     }
                 }
-                Text("Choose a device if more than one programmer is connected.").font(.caption).foregroundStyle(.secondary)
             }
         }.font(.callout).padding(26).background(panelBackground).disabled(model.isBusy)
     }
@@ -452,7 +540,7 @@ struct CartridgeWorkspaceView: View {
                         } else { ProgressView().progressViewStyle(.linear) }
                     }.padding(.vertical,16)
                     HStack {
-                        Text("\(model.operationCartridge?.title ?? "Cartridge") · \(model.operationTitle == "Cartridge backup" ? "Backup" : "Write and verify")").font(.caption).foregroundStyle(.secondary)
+                        Text("\(model.operationCartridge.map { model.displayTitle(for:$0) } ?? "Cartridge") · \(model.operationTitle == "Cartridge backup" ? "Backup" : "Write and verify")").font(.caption).foregroundStyle(.secondary)
                         Spacer()
                         Button(progress.cancellable ? "Cancel Transfer" : "Stop Safely") { model.cancel() }
                     }
@@ -465,7 +553,7 @@ struct CartridgeWorkspaceView: View {
                             ForEach(result.manifest.artifacts,id:\.filename) { artifact in
                                 HStack {
                                     Image(systemName:artifact.isROM ? "gamecontroller" : "externaldrive").foregroundStyle(flashViolet)
-                                    Text(artifact.isROM ? "Game ROM · \(artifact.filename)" : "SRAM data · \(artifact.filename)").font(.callout.weight(.medium)).lineLimit(1).truncationMode(.middle)
+                                    Text(artifact.isROM ? "Game ROM · \(artifact.filename)" : (model.operationResult?.manifest.serialSave != nil ? "SPI save data · " : "SRAM data · ") + artifact.filename).font(.callout.weight(.medium)).lineLimit(1).truncationMode(.middle)
                                     Spacer()
                                     Text(formatBytes(artifact.bytes)).font(.caption).foregroundStyle(.secondary)
                                     if artifact.verified { Image(systemName:"checkmark.seal").foregroundStyle(flashMint).help("Verified with a second read") }
@@ -492,7 +580,7 @@ struct CartridgeWorkspaceView: View {
     private func operationHeading(_ progress:OperationProgress) -> String {
         if model.operationRunning { return model.operationTitle == "Cartridge backup" ? "Backing up your cartridge" : "Writing your cartridge" }
         switch progress.phase {
-        case .completed: return model.operationTitle == "Cartridge backup" ? "Backup complete" : "Write verified"
+        case .completed: return model.operationTitle == "Cartridge backup" ? "Files saved" : "Write verified"
         case .cancelled: return "Transfer cancelled"
         default: return "Transfer could not finish"
         }
@@ -508,12 +596,57 @@ struct CartridgeWorkspaceView: View {
             Button { pendingAdvancedScroll = !advanced; advanced.toggle() } label: {
                 HStack(spacing:5) { Text("Advanced Settings"); Image(systemName:advanced ? "chevron.up" : "chevron.down").font(.system(size:9,weight:.semibold)) }
             }.accessibilityValue(advanced ? "Expanded" : "Collapsed")
+            if !model.pendingSaveRecovery.isEmpty {
+                Button("Save Recovery") { model.showSaveRecovery() }.foregroundStyle(.orange)
+                    .help("An interrupted write left preserved SRAM files. Keep them until the cartridge is recovered.")
+            }
             Button("Activity") { model.showHistory = true }
         }.buttonStyle(.plain).font(.caption).padding(.horizontal,32).padding(.vertical,20)
     }
     private var panelBackground: some View {
         RoundedRectangle(cornerRadius:22).fill(scheme == .dark ? Color.white.opacity(0.045) : Color.white.opacity(0.72))
             .overlay(RoundedRectangle(cornerRadius:22).strokeBorder(Color.primary.opacity(contrast == .increased ? 0.35 : 0.07),lineWidth:1))
+    }
+}
+
+private struct CartridgeTitleEditor: View {
+    let model: WorkspaceModel
+    let cartridge: CartridgeSnapshot
+    @Binding var isPresented: Bool
+    @State private var title: String
+    @FocusState private var focused: Bool
+
+    init(model: WorkspaceModel, cartridge: CartridgeSnapshot, isPresented: Binding<Bool>) {
+        self.model = model; self.cartridge = cartridge; self._isPresented = isPresented
+        self._title = State(initialValue:model.displayTitle(for:cartridge))
+    }
+    private var trimmed: String { title.trimmingCharacters(in:.whitespacesAndNewlines) }
+    private var valid: Bool {
+        !trimmed.isEmpty && trimmed.count <= 128 && !trimmed.unicodeScalars.contains(where:CharacterSet.controlCharacters.contains)
+    }
+    private func save() {
+        guard valid, !model.isBusy, !model.showReview else { return }
+        model.setCartridgeTitle(trimmed); isPresented = false
+    }
+    var body: some View {
+        VStack(alignment:.leading,spacing:12) {
+            Text("Cartridge title").font(.headline)
+            TextField("Game title",text:$title).textFieldStyle(.roundedBorder).focused($focused)
+                .accessibilityIdentifier("cartridgeTitleField").onSubmit { save() }
+            Text("Used for display and backup filenames.").font(.caption).foregroundStyle(.secondary)
+            Text("Header title: \(cartridge.title)").font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+            if trimmed.count > 128 { Text("Use up to 128 characters.").font(.caption).foregroundStyle(.secondary) }
+            HStack {
+                if model.titleOverride != nil {
+                    Button("Use Header Title") { model.setCartridgeTitle(nil); isPresented = false }.buttonStyle(.plain).foregroundStyle(flashViolet)
+                }
+                Spacer()
+                Button("Cancel") { isPresented = false }.keyboardShortcut(.cancelAction)
+                Button("Save") { save() }.keyboardShortcut(.defaultAction).disabled(!valid || model.isBusy || model.showReview)
+            }.padding(.top,4)
+        }.padding(20).frame(width:360)
+            .onAppear { focused = true }
+            .onExitCommand { isPresented = false }
     }
 }
 

@@ -67,12 +67,40 @@ struct SelectedFile: Sendable, Identifiable {
     var selectedPort = "" {
         didSet {
             invalidateReview()
-            if oldValue != selectedPort, connected { connected = false; cartridge = nil; contentAnalysis = nil }
+            if oldValue != selectedPort, connected { connected = false; cartridge = nil; contentAnalysis = nil; clearTitleOverride() }
         }
     }
     var connected = false
     var cartridge: CartridgeSnapshot?
     var contentAnalysis: ROMContentAnalysis?
+    private(set) var titleOverride: String?
+    private var titleOverrideKey: String?
+    private let titleOverridesDefaultsKey = "cartridgeTitleOverrides"
+    func displayTitle(for snapshot: CartridgeSnapshot) -> String {
+        titleOverride ?? snapshot.title
+    }
+    func setCartridgeTitle(_ title: String?) {
+        guard !isBusy, !showReview, let cartridge else { return }
+        let trimmed = title?.trimmingCharacters(in:.whitespacesAndNewlines)
+        if let trimmed, trimmed.isEmpty || trimmed.count > 128 || trimmed.unicodeScalars.contains(where:CharacterSet.controlCharacters.contains) { return }
+        titleOverride = trimmed == cartridge.title ? nil : trimmed
+        if let key = titleOverrideKey {
+            var titles = UserDefaults.standard.dictionary(forKey:titleOverridesDefaultsKey) as? [String:String] ?? [:]
+            titles[key] = titleOverride
+            UserDefaults.standard.set(titles,forKey:titleOverridesDefaultsKey)
+        }
+    }
+    private func clearTitleOverride() {
+        titleOverride = nil; titleOverrideKey = nil
+    }
+    private func loadTitleOverride(from analysis: ROMContentAnalysis?) {
+        // A generic header alone cannot distinguish games built with the same SDK.
+        titleOverrideKey = analysis.map { "rom:\($0.identitySHA256 ?? $0.sha256)" }
+        titleOverride = titleOverrideKey.flatMap { key in
+            let titles = UserDefaults.standard.dictionary(forKey:titleOverridesDefaultsKey) as? [String:String]
+            return titles?[key] ?? analysis.flatMap { titles?["rom:\($0.sha256)"] }
+        }
+    }
     var isInspecting = false
     var backupROM = true
     var backupSRAM = true
@@ -80,6 +108,61 @@ struct SelectedFile: Sendable, Identifiable {
     var writeSRAM = false { didSet { invalidateReview() } }
     var clearUnusedROM = true { didSet { invalidateReview() } }
     var verifyBackup = true { didSet { UserDefaults.standard.set(verifyBackup,forKey:"verifyBackup") } }
+    var mdDumperStreaming = false {
+        didSet {
+            UserDefaults.standard.set(mdDumperStreaming,forKey:"mdDumperStreaming")
+        }
+    }
+    var mdDumperStreamingSupported = false
+    var canPrepareMDDumperROMWriting: Bool {
+        !isBusy && connected && !configurationPending && !demoMode && mdDumperStreamingSupported &&
+        cartridge?.readerKind == .mdDumper && cartridge?.mapper == .linear && cartridge?.canWrite != true
+    }
+    func prepareMDDumperROMWriting() {
+        guard canPrepareMDDumperROMWriting, let cartridge else { return }
+        let alert = NSAlert()
+        alert.messageText = "Prepare this cartridge for ROM writing?"
+        alert.informativeText = "Use a writable flash cartridge. FlashMD will identify its chip without erasing or programming it. You must then restart the reader with the same cartridge inserted."
+        alert.addButton(withTitle:"Prepare"); alert.addButton(withTitle:"Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        invalidateReview(); isInspecting = true; errorMessage = nil
+        scanStep = "Checking ROM before chip identification"
+        Task {
+            defer { isInspecting = false }
+            do {
+                let model = self
+                try await controller.prepareMDDumperROMWriting(cartridge) { [weak model] value in
+                    Task { @MainActor [weak model] in
+                        guard model?.isInspecting == true, value.total > 0 else { return }
+                        model?.scanStep = "Preparing ROM writing · \(value.completed * 100 / value.total)%"
+                    }
+                }
+                record(.init(title:"ROM writing prepared",detail:"Flash identified; restart required. No ROM erased or programmed."))
+                let prompt = NSAlert()
+                prompt.messageText = "Restart the reader"
+                prompt.informativeText = "Leave this cartridge inserted. Turn the MD Dumper off, unplug USB, then reconnect and scan. FlashMD will check the ROM before enabling writing. Keep FlashMD open until then."
+                prompt.addButton(withTitle:"OK"); prompt.runModal()
+            } catch { errorMessage = error.localizedDescription }
+            connected = false; self.cartridge = nil; contentAnalysis = nil
+        }
+    }
+    var pendingSaveRecovery = SaveRecoveryJournal.pendingFolders()
+    func showSaveRecovery() { NSWorkspace.shared.open(SaveRecoveryJournal.directory) }
+    var backupVerificationRequired: Bool {
+        guard let cartridge else { return false }
+        return cartridge.mapper != .linear || cartridge.readerKind == .mdDumper && mdDumperStreaming && mdDumperStreamingSupported
+    }
+    var backupWillBeVerified: Bool { verifyBackup || backupVerificationRequired }
+    var savePanelTitle: String { cartridge?.serialSave != nil ? "SPI save data" : "SRAM data" }
+    var backupSaveSubtitle: String {
+        guard let cartridge else { return "Save backup not supported yet" }
+        if let serial = cartridge.serialSave {
+            return cartridge.canBackupSave ? formatBytes(serial.addressBytes) + " address range · backup only" : "Save backup unavailable on this reader"
+        }
+        guard cartridge.canBackupSave, let layout = cartridge.saveLayout else { return cartridge.saveStatus.explanation }
+        let note = cartridge.saveStatus == .confirmed || cartridge.canCheckSaveWriting ? " of save data" : cartridge.saveStatus == .readOnly ? " · backup only" : " · unconfirmed SRAM"
+        return formatBytes(layout.activeBytes) + note
+    }
     var saveFormat: SaveFormat = .packed
     var saveImportFormat: SaveImportFormat = .automatic { didSet { invalidateReview() } }
     var backupLengthExplanation: String { switch backupLength {
@@ -92,8 +175,37 @@ struct SelectedFile: Sendable, Identifiable {
         format == .raw && cartridge?.readerKind == .mdDumper ? "Padded bus format" : format.displayName
     }
     var saveFormatExplanation: String {
-        if saveFormat == .raw, cartridge?.readerKind == .mdDumper { return "Stores SRAM on one lane and fills the unused lane with zeros." }
+        if saveFormat == .raw, cartridge?.readerKind == .mdDumper { return "Stores SRAM with zero padding on the unused lane." }
         return saveFormat == .packed ? SaveImportFormat.packed.explanation : SaveImportFormat.raw.explanation
+    }
+    var mapperExplanation: String { switch mapper {
+        case .automatic: "Uses mapper hints and checks bank switching."
+        case .linear: "Reads ROM directly, without bank switching."
+        case .segaSSF2: "Checks Sega SSF2-style bank switching."
+        case .pierSolar: "Checks Pier Solar’s 8 MiB bank switching."
+    } }
+    var memoryConfigurationUnavailable: Bool { cartridge.map { $0.romAccess != .linear } ?? false }
+    var profileExplanation: String {
+        if memoryConfigurationUnavailable { return "Not available for this ROM mapper." }
+        if manualConfiguration { return "Replaced by the memory settings below." }
+        switch profile {
+        case .automatic: return "Uses scanned ROM capacity and header SRAM."
+        case .krikzz4M: return "Limits ROM to 2 MiB; uses 32 KiB odd-lane SRAM."
+        case .linearROMOnly: return "Allows up to 4 MiB ROM; disables SRAM."
+        }
+    }
+    var memoryOverrideExplanation: String {
+        if memoryConfigurationUnavailable { return "Not available for this ROM mapper." }
+        return manualConfiguration ? "Uses the capacity and SRAM settings below." : "Uses the selected cartridge configuration."
+    }
+    var saveLaneExplanation: String { switch saveLane {
+        case 0: "Reads even-address bytes; writing is unsupported."
+        case 2: "Uses both lanes: even start, odd end."
+        default: "Uses odd-address bytes for 8-bit SRAM."
+    } }
+    var programmerExplanation: String {
+        if ports.isEmpty { return "Connect a supported USB programmer." }
+        return selectedPort.isEmpty ? "Select the programmer to use." : "Uses this programmer for the next connection."
     }
     var forcedROMSize = ""
     var selectedROM: SelectedFile? { didSet { invalidateReview() } }
@@ -115,19 +227,18 @@ struct SelectedFile: Sendable, Identifiable {
     var operationRunning = false
     var loadingFile = false
     var isBusy: Bool { isInspecting || operationRunning || loadingFile }
-    var canBackup: Bool { !isBusy && !configurationPending && !demoMode && connected && cartridge != nil && (backupROM || backupSRAM) && (!backupROM || cartridge?.canBackupROM == true) }
+    var canBackup: Bool { !isBusy && !configurationPending && !demoMode && connected && cartridge != nil && (backupROM || backupSRAM) && (!backupROM || cartridge?.canBackupROM == true) && (!backupSRAM || cartridge?.canBackupSave == true) }
     var canReviewWrite: Bool {
         guard !isBusy, !configurationPending, !demoMode, connected, let cartridge, writeROM || writeSRAM else { return false }
-        return (!writeROM || (cartridge.canWrite && selectedROM != nil)) && (!writeSRAM || (cartridge.canRestoreSave && selectedSRAM != nil))
+        return (!writeROM || (cartridge.canWrite && selectedROM != nil)) && (!writeSRAM || (cartridge.canStartSaveWrite && selectedSRAM != nil))
     }
     var backupSizeDescription: String {
         if let cartridge, !cartridge.canBackupROM { return "ROM backup unavailable" }
-        if let cartridge, cartridge.mapper != .linear { return formatBytes(cartridge.romReadLimit) + " · complete banked ROM" }
         switch backupLength {
-        case .complete: return cartridge.map { formatBytes($0.romReadLimit) + " · complete ROM range" } ?? "Size not yet known"
+        case .complete: return cartridge.map { formatBytes($0.romReadLimit) + " · full scan range" } ?? "Size not yet known"
         case .suggested:
             if let bytes = contentAnalysis?.suggestedBytes { return formatBytes(bytes) + " · suggested export" }
-            return cartridge.map { formatBytes($0.romReadLimit) + " · complete ROM (no suggestion)" } ?? "Scan to analyze contents"
+            return cartridge.map { formatBytes($0.romReadLimit) + " · size unconfirmed" } ?? "Scan to analyze contents"
         case .header: return cartridge?.romSize.map { formatBytes($0.bytes) + " · header only" } ?? "No valid header size"
         case .custom: return Int(forcedROMSize).map { formatBytes($0) + " · custom" } ?? "Set size in Advanced Settings"
         }
@@ -144,6 +255,7 @@ struct SelectedFile: Sendable, Identifiable {
         history = HistoryStore(url:folder.appendingPathComponent("history.json"))
         activity = history.load()
         verifyBackup = UserDefaults.standard.object(forKey:"verifyBackup") as? Bool ?? true
+        mdDumperStreaming = UserDefaults.standard.bool(forKey:"mdDumperStreaming")
     }
     func initialize() async {
         guard !initialized else { return }; initialized = true
@@ -157,6 +269,7 @@ struct SelectedFile: Sendable, Identifiable {
     func refresh() async {
         guard !isBusy else { return }
         isInspecting = true; errorMessage = nil; clearOperationPresentation(); cartridge = nil; contentAnalysis = nil; invalidateReview()
+        clearTitleOverride()
         defer { isInspecting = false }
         if demoMode {
             scanStep = "Reading sample cartridge"
@@ -173,27 +286,40 @@ struct SelectedFile: Sendable, Identifiable {
             do {
                 scanStep = "Connecting to your programmer"
                 selectedPort = port.id
-                try await controller.connect(path:port.id)
-                connected = true; connectedProgrammer = port.kind
-                scanStep = "Identifying flash and reading game information"
-                let snapshot = try await controller.inspect(profile:profile,override:configurationOverride,mapper:mapper)
-                scanStep = "Analyzing ROM contents"
                 let model = self
-                let analysis = snapshot.canBackupROM ? try await controller.analyze(snapshot) { [weak model] value in
+                let scan = try await controller.scan(path:port.id,profile:profile,override:configurationOverride,
+                    mapper:mapper,mdDumperStreaming:mdDumperStreaming) { [weak model] value in
                     Task { @MainActor [weak model] in
-                        guard model?.isInspecting == true, value.total > 0 else { return }
-                        model?.scanStep = "Analyzing ROM contents · \(value.completed * 100 / value.total)%"
+                        guard model?.isInspecting == true else { return }
+                        model?.scanStep = value.total > 0 ? "Analyzing ROM contents · \(value.completed * 100 / value.total)%" : value.detail
                     }
-                } : nil
+                }
+                for failure in scan.failures {
+                    record(.init(title:"Scan repeated",detail:failure.diagnosticText,outcome:"retried"))
+                }
+                let snapshot = scan.cartridge, analysis = scan.analysis
+                mdDumperStreamingSupported = await controller.supportsMDDumperStreaming()
+                connected = true; connectedProgrammer = port.kind
                 cartridge = snapshot
                 contentAnalysis = analysis
+                loadTitleOverride(from:analysis)
                 configurationPending = false
-                backupSRAM = snapshot.saveLayout != nil
+                backupSRAM = snapshot.canBackupSave
                 if !snapshot.canWrite { writeROM = false }
-                if snapshot.saveLayout == nil { writeSRAM = false }
+                if !snapshot.canStartSaveWrite { writeSRAM = false }
                 record(.init(title:"Cartridge inspected",detail:snapshot.title))
                 return
-            } catch { lastError = error; connected = false }
+            } catch {
+                lastError = error; connected = false
+                if let failure = error as? CartridgeScanFailure {
+                    for attempt in failure.failures {
+                        record(.init(title:"Scan failed",detail:attempt.diagnosticText,outcome:"failed"))
+                    }
+                } else {
+                    record(.init(title:"Scan failed",detail:"\(port.kind.displayName): \(error.localizedDescription)",outcome:"failed"))
+                }
+                if Task.isCancelled || (error as? CartridgeScanFailure)?.underlying is CancellationError { break }
+            }
         }
         errorMessage = lastError?.localizedDescription ?? "The programmer could not be connected. Try another USB port."
     }
@@ -205,7 +331,7 @@ struct SelectedFile: Sendable, Identifiable {
     func useDetectedConfiguration() {
         guard let cartridge else { return }
         // Preserve the detected values when opening the override editor.
-        capacityChoice = cartridge.flashCapacity?.bytes ?? 0x400000
+        capacityChoice = cartridge.romReadLimit
         manualSave = cartridge.saveLayout != nil
         if let layout = cartridge.saveLayout {
             saveStart = String(layout.start,radix:16).uppercased(); saveEnd = String(layout.end,radix:16).uppercased()
@@ -215,6 +341,7 @@ struct SelectedFile: Sendable, Identifiable {
     func updateConnectionMode() async {
         guard !operationRunning else { return }
         try? await controller.disconnect(); connected = false; cartridge = nil; contentAnalysis = nil
+        clearTitleOverride()
         if demoMode { await refresh() } else { await scanPorts() }
     }
     func selectFile(_ result: Result<URL,Error>, forROM: Bool) {
@@ -244,7 +371,7 @@ struct SelectedFile: Sendable, Identifiable {
             let count: Int?
             if !backupROM { count = nil }
             else {
-                switch cartridge.mapper == .linear ? backupLength : .complete {
+                switch backupLength {
                 case .complete: count = cartridge.romReadLimit
                 case .suggested: count = contentAnalysis?.suggestedBytes ?? cartridge.romReadLimit
                 case .header: count = cartridge.romSize?.bytes
@@ -252,9 +379,10 @@ struct SelectedFile: Sendable, Identifiable {
                 }
             }
             if backupROM, count == nil { throw FlashMDError.invalid("Choose a ROM backup length in Advanced Settings. This cartridge has no usable size information.") }
-            if backupSRAM, cartridge.saveLayout == nil { throw FlashMDError.invalid("No SRAM range was detected. Choose ROM only or configure save memory in Advanced Settings.") }
+            if backupSRAM, cartridge.saveLayout == nil, cartridge.serialSave == nil { throw FlashMDError.invalid("No SRAM range was detected. Choose ROM only or configure save memory in Advanced Settings.") }
             guard let destination = chooseDestination(prompt:"Choose backup destination") else { return }
-            let request = try BackupRequest(cartridge:cartridge,romBytes:count,saveLayout:backupSRAM ? cartridge.saveLayout : nil,saveFormat:saveFormat,verify:verifyBackup,destination:destination,contentAnalysis:contentAnalysis)
+            let serial = backupSRAM && cartridge.serialSave != nil
+            let request = try BackupRequest(cartridge:cartridge,romBytes:count,saveLayout:backupSRAM ? cartridge.saveLayout : nil,saveFormat:serial ? .packed : saveFormat,verify:backupWillBeVerified,destination:destination,contentAnalysis:contentAnalysis,titleOverride:titleOverride,includeSerialSave:serial)
             beginOperation(title:"Cartridge backup") { controller,progress in try await controller.backup(request,progress:progress) }
         } catch { errorMessage = error.localizedDescription }
     }
@@ -275,7 +403,7 @@ struct SelectedFile: Sendable, Identifiable {
                 let candidates = SaveFormat.allCases.compactMap { try? plan($0,save:save) }
                 guard let first = candidates.first else { throw FlashMDError.invalid("This save file does not match the cartridge. Check the save format and SRAM settings in Advanced Settings.") }
                 guard candidates.allSatisfy({ $0.save == first.save && $0.saveLayout == first.saveLayout }) else {
-                    throw FlashMDError.invalid("The SRAM format is ambiguous. Choose Save bytes only or Full bus dump in Advanced Settings.")
+                    throw FlashMDError.invalid("The SRAM format is ambiguous. Choose an SRAM file format in Advanced Settings.")
                 }
                 reviewPlan = first
             } else {
@@ -300,7 +428,8 @@ struct SelectedFile: Sendable, Identifiable {
         if plan.rom != nil && plan.save != nil { change = "The existing game and saves will be overwritten." }
         else if plan.rom != nil { change = "The existing game will be overwritten." + (plan.target.saveLayout != nil ? " SRAM saves will be preserved." : "") }
         else { change = "Existing cartridge saves will be overwritten." }
-        return "\(plan.target.title)\n\n\(change)\n\nThis cannot be undone without a backup."
+        let check = plan.target.canCheckSaveWriting ? "\n\nFlashMD will first check SRAM write access and restore the test bytes." : ""
+        return "\(displayTitle(for:plan.target))\n\n\(change)\(check)\n\nThis cannot be undone without a backup."
     }
     func confirmWrite() {
         guard !isBusy, !demoMode, let plan = reviewPlan else { return }
@@ -319,11 +448,13 @@ struct SelectedFile: Sendable, Identifiable {
         progressID = identifier
         operationTask = Task {
             defer {
-                progressID = nil; operationEnd = Date(); operationRunning = false; operationTask = nil
+                progressID = nil; pendingSaveRecovery = SaveRecoveryJournal.pendingFolders()
+                operationEnd = Date(); operationRunning = false; operationTask = nil
                 if sleepAssertion != 0 { IOPMAssertionRelease(sleepAssertion); sleepAssertion = 0 }
             }
             do {
                 let model = self
+                try await controller.setMDDumperStreaming(mdDumperStreaming)
                 let result = try await work(controller) { [weak model] value in
                     Task { @MainActor [weak model] in
                         if model?.progressID == identifier { model?.progress = value }
@@ -332,7 +463,11 @@ struct SelectedFile: Sendable, Identifiable {
                 progressID = nil
                 operationResult = result
                 record(.init(title:title,detail:result.manifest.phases.joined(separator:" · "),outcome:result.manifest.outcome,result:result,id:eventID,date:eventDate))
-                completionMessage = title == "Cartridge backup" ? (result.manifest.artifacts.allSatisfy(\.verified) ? "Files saved and verified." : "Files saved. Verification was off.") : "Written and verified."
+                completionMessage = title == "Cartridge backup" ? (result.manifest.artifacts.allSatisfy(\.verified) ? "Files read and verified." : "Files saved. Verification was off.") : "Written and verified."
+                if title == "Cartridge backup", result.manifest.contentAnalysis?.hasUncertainRange == true { completionMessage = (completionMessage ?? "Files saved.") + " Part of the ROM range remains unconfirmed." }
+                if title == "Cartridge backup", result.manifest.serialSave == nil, result.manifest.artifacts.contains(where:{ !$0.isROM }), result.manifest.saveStatus != .confirmed {
+                    completionMessage = (completionMessage ?? "Files saved.") + " SRAM memory type is unconfirmed."
+                }
                 if result.manifest.preservedSaveSHA256 != nil { completionMessage = "ROM written and verified. Existing saves preserved." }
                 progress = .init(.completed,detail:completionMessage ?? "Completed")
                 cartridge = try? await controller.inspect(profile:profile,override:configurationOverride,mapper:mapper)

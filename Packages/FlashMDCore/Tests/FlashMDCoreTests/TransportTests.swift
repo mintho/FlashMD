@@ -44,18 +44,21 @@ private func socketTransport() throws -> (SerialTransport, Int32) {
     _ = fcntl(descriptors[0], F_SETFL, O_NONBLOCK)
     return (SerialTransport(ownedDescriptor: descriptors[0]), descriptors[1])
 }
-@Test func nativeTransportCollectsFragmentedReplies() async throws {
+@Test func nativeTransportCollectsFragmentedReplies() throws {
     let (transport, peer) = try socketTransport()
     defer { transport.close(); Darwin.close(peer) }
-    let sender = Task.detached {
+    let sender = DispatchGroup()
+    sender.enter()
+    Thread.detachNewThread {
+        defer { sender.leave() }
         for value in UInt8(1)...UInt8(6) {
             var byte = value
             _ = withUnsafePointer(to: &byte) { Darwin.write(peer, $0, 1) }
-            try await Task.sleep(for: .milliseconds(5))
+            usleep(5000)
         }
     }
-    let bytes = try transport.read(count:6,timeout:1,cancellable:true)
-    try await sender.value
+    let bytes = try transport.read(count:6,timeout:3,cancellable:true)
+    sender.wait()
     #expect(bytes == Data([1,2,3,4,5,6]))
 }
 @Test func nativeTransportBoundsTimeoutAndDisconnect() throws {
@@ -78,7 +81,7 @@ private final class ReceivedBytes: @unchecked Sendable {
     defer { transport.close(); Darwin.close(peer) }
     let payload = Data(repeating:0x77,count:262144), received = ReceivedBytes(), finished = DispatchGroup()
     finished.enter()
-    DispatchQueue.global().async {
+    Thread.detachNewThread {
         defer { finished.leave() }
         var buffer = [UInt8](repeating:0,count:4096), count = 0
         while count < payload.count {
@@ -122,19 +125,35 @@ func hardwareVerifiedSRAMBackups() async throws {
 }
 
 @Test func nativeProgrammingUsesBufferedWordPacketsAndExitsBypass() throws {
-    let transport = ScriptTransport([Data([1,1]),Data([0xFF,0xFF])])
+    var bus = Data(count:256)
+    let cfi = fixtureCFI(eightMB:true)
+    for index in cfi.indices { bus[index*2+1] = cfi[index] }
+    let replies = try linearInspectionResponses(header:Data(fixtureROM(save:false).prefix(512)),cfiBus:bus)
+    let transport = ScriptTransport(replies + [Data([0xFF,0xFF])])
     let device = try FlashKitDevice(transport:transport,path:"test")
+    _ = try device.inspect(profile:.automatic)
     try device.program(offset:0x10000,data:Data([0x12,0x34,0x56,0x78]))
     #expect(transport.writes.contains(Data([0x53,0xA0,0xC3,0x12,0x34,4,0x53,0xA0,0xC3,0x56,0x78,4])))
     #expect(transport.writes.contains(Data([0x53,0x90])))
     #expect(transport.writes.contains(Data([0x43,0,0xF0])))
 }
 @Test func nativeSaveRestoreUsesOnlyOddLaneByteWrites() throws {
-    let transport = ScriptTransport([Data([1,1])])
+    var header = Data(fixtureROM().prefix(512))
+    header.replaceSubrange(0x1B8..<0x1BC,with:Data([0,0x20,0,3]))
+    let transport = try ScriptTransport(linearInspectionResponses(header:header,cfiBus:Data(count:256)))
     let device = try FlashKitDevice(transport:transport,path:"test")
+    _ = try device.inspect(profile:.automatic)
     let layout = try SRAMLayout(start:0x200001,end:0x200003,lane:1)
     try device.restore(layout:layout,raw:Data([0xFF,0x12,0xFF,0x34]))
     #expect(transport.writes.last == Data([0,0x10,0,0,0,0,0x53,0x12,0,0x10,0,0,0,1,0x53,0x34]))
     let even = try SRAMLayout(start:0x200000,end:0x200002,lane:0)
     #expect(throws:(any Error).self) { try device.restore(layout:even,raw:Data(count:4)) }
+}
+
+@Test func nativeFlashWritesRequireQualifiedGeometryBeforeAnyWriteCommand() throws {
+    let transport = ScriptTransport([Data([1,1])]), device = try FlashKitDevice(transport:transport,path:"test")
+    let commandCount = transport.writes.count
+    #expect(throws:FlashMDError.self) { try device.program(offset:0,data:Data([0x12,0x34])) }
+    #expect(throws:FlashMDError.self) { try device.erase(sector:.init(offset:0,bytes:8192)) }
+    #expect(transport.writes.count == commandCount)
 }

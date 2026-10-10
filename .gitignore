@@ -1,6 +1,7 @@
 # Local notes and reference material
 *.md
 *.markdown
+!/README.md
 docs/
 previews/
 .local/
@@ -36,3 +37,6 @@ xcuserdata/
 
 # Local cartridge backups
 /Backups/
+
+# Local emulator diagnostics
+/Emulator Tests/

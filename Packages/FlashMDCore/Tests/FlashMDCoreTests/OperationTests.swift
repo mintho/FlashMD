@@ -23,6 +23,31 @@ import Testing
     #expect(revised.hasSuffix(" (JP, US, EU) [rev 99]"))
 }
 
+@Test func editedBackupTitlePreservesCartridgeHeaderAndContents() throws {
+    let device = MemoryDevice(), destination = try tempFolder()
+    defer { try? FileManager.default.removeItem(at:destination) }
+    device.rom = fixtureROM(title:"SAMPLE PROGRAM") + Data(repeating:0xFF,count:0x400000-65536)
+    let originalROM = device.rom, originalSave = device.sram
+    let target = try device.inspect(profile:.automatic)
+    let request = try BackupRequest(cartridge:target,romBytes:65536,saveLayout:target.saveLayout,saveFormat:.packed,verify:true,destination:destination,titleOverride:"  Death & Lead  ")
+    let result = try OperationRunner.backup(device:device,request:request,progress:{_ in})
+    let folder = try #require(result.folder)
+    #expect(folder.lastPathComponent.hasPrefix("Death & Lead (JP, US, EU) — "))
+    #expect(result.manifest.artifacts.map(\.filename) == ["Death & Lead (JP, US, EU).bin","Death & Lead (JP, US, EU).srm"])
+    #expect(result.manifest.cartridgeTitle == "Death & Lead")
+    #expect(result.manifest.rawHeader == target.rawHeader)
+    #expect(try Data(contentsOf:folder.appendingPathComponent(result.manifest.artifacts[0].filename)) == Data(originalROM.prefix(65536)))
+    #expect(try Data(contentsOf:folder.appendingPathComponent(result.manifest.artifacts[1].filename)) == target.saveLayout!.pack(originalSave.prefix(target.saveLayout!.windowBytes)))
+    #expect(try device.inspect(profile:.automatic) == target)
+    #expect(device.rom == originalROM && device.sram == originalSave)
+    #expect(device.erasures == 0 && device.programs == 0 && device.restores == 0)
+    for title in ["   ", String(repeating:"a",count:129), "Invalid\nTitle"] {
+        #expect(throws:(any Error).self) {
+            try BackupRequest(cartridge:target,romBytes:65536,saveLayout:nil,verify:true,destination:destination,titleOverride:title)
+        }
+    }
+}
+
 @Test func repeatedBackupsHaveSeparateFoldersAndPreserveContents() throws {
     let device = MemoryDevice(), destination = try tempFolder()
     defer { try? FileManager.default.removeItem(at:destination) }
@@ -75,7 +100,7 @@ import Testing
     let target = try device.inspect(profile:.krikzz4M), image = try ROMImage(data:fixtureROM(title:"NEW GAME"))
     let plan = try WritePlan(target:target,image:image,romName:"new.bin",save:Data(count:65536),saveName:"save.srm",format:.raw,backupDestination:destination)
     device.failSaveRead = true
-    #expect(throws:(any Error).self) { try OperationRunner.write(device:device,plan:plan,progress:{_ in}) }
+    #expect(throws:(any Error).self) { try testWrite(device:device,plan:plan,progress:{_ in}) }
     #expect(device.erasures == 0); #expect(device.programs == 0)
 }
 @Test func combinedWriteVerifiesAndPreservesInactiveSaveBytes() throws {
@@ -83,7 +108,7 @@ import Testing
     let image = try ROMImage(data:fixtureROM(bytes:65538,title:"NEW GAME")), packed = Data(repeating:0x77,count:8192)
     let plan = try WritePlan(target:target,image:image,romName:"new.bin",save:packed,saveName:"save.srm",format:.packed,backupDestination:nil)
     #expect(plan.requiredBytes == 131072)
-    let result = try OperationRunner.write(device:device,plan:plan,progress:{_ in})
+    let result = try testWrite(device:device,plan:plan,progress:{_ in})
     #expect(result.manifest.outcome == "completed"); #expect(result.manifest.phases.contains("SRAM verified"))
     #expect(Data(device.rom.prefix(image.data.count)) == image.data)
     #expect(device.rom[image.data.count..<plan.requiredBytes].allSatisfy { $0 == 0xFF })
@@ -92,7 +117,7 @@ import Testing
 @Test func romOnlyPreservesEntireSave() throws {
     let device = MemoryDevice(), oldSave = device.sram, target = try device.inspect(profile:.krikzz4M)
     let plan = try WritePlan(target:target,image:ROMImage(data:fixtureROM(title:"NEW GAME")),romName:"new.bin",save:nil,saveName:nil,format:.raw,backupDestination:nil)
-    let result = try OperationRunner.write(device:device,plan:plan,progress:{_ in})
+    let result = try testWrite(device:device,plan:plan,progress:{_ in})
     #expect(device.sram == oldSave); #expect(device.restores == 0)
     #expect(result.manifest.phases.contains("Existing SRAM preserved and verified"))
     #expect(result.manifest.preservedSaveSHA256 == hash(try target.saveLayout!.pack(oldSave)))
@@ -102,7 +127,7 @@ import Testing
     defer { try? FileManager.default.removeItem(at:destination) }
     let oldROM = Data(device.rom.prefix(target.romReadLimit)), oldSave = device.sram
     let plan = try WritePlan(target:target,image:ROMImage(data:fixtureROM()),romName:"new.bin",save:nil,saveName:nil,format:.raw,backupDestination:destination)
-    let result = try OperationRunner.write(device:device,plan:plan,progress:{_ in})
+    let result = try testWrite(device:device,plan:plan,progress:{_ in})
     let folder = try #require(result.folder)
     #expect(try Data(contentsOf:folder.appendingPathComponent("Test Game (JP, US, EU).bin")) == oldROM)
     #expect(try Data(contentsOf:folder.appendingPathComponent("Test Game (JP, US, EU).srm")) == oldSave)
@@ -111,14 +136,14 @@ import Testing
     let device = MemoryDevice(), target = try device.inspect(profile:.krikzz4M)
     let plan = try WritePlan(target:target,image:ROMImage(data:fixtureROM()),romName:"new.bin",save:nil,saveName:nil,format:.raw,backupDestination:nil)
     device.failSaveRead = true
-    #expect(throws:(any Error).self) { try OperationRunner.write(device:device,plan:plan,progress:{_ in}) }
+    #expect(throws:(any Error).self) { try testWrite(device:device,plan:plan,progress:{_ in}) }
     #expect(device.erasures == 0 && device.programs == 0)
 }
 @Test func unexpectedSaveChangeIsRecoveredAndVerified() throws {
     let device = MemoryDevice(), target = try device.inspect(profile:.krikzz4M), oldSave = device.sram
     let plan = try WritePlan(target:target,image:ROMImage(data:fixtureROM()),romName:"new.bin",save:nil,saveName:nil,format:.raw,backupDestination:nil)
     device.changeSaveOnErase = true
-    let result = try OperationRunner.write(device:device,plan:plan,progress:{_ in})
+    let result = try testWrite(device:device,plan:plan,progress:{_ in})
     #expect(device.sram == oldSave && device.restores == 1)
     #expect(result.manifest.phases.contains("Existing SRAM recovered"))
 }
@@ -128,7 +153,7 @@ import Testing
     let image = try ROMImage(data:fixtureROM())
     let plan = try WritePlan(target:target,image:image,romName:"new.bin",save:nil,saveName:nil,format:.raw,backupDestination:nil,clearUnusedROM:true)
     #expect(plan.requiredBytes == target.romReadLimit)
-    _ = try OperationRunner.write(device:device,plan:plan,progress:{_ in})
+    _ = try testWrite(device:device,plan:plan,progress:{_ in})
     #expect(Data(device.rom.prefix(image.data.count)) == image.data)
     #expect(device.rom[image.data.count..<target.romReadLimit].allSatisfy { $0 == 0xFF })
     #expect(device.sram == originalSave && device.restores == 0)
@@ -137,7 +162,8 @@ import Testing
     let device = MemoryDevice(), detected = try device.inspect(profile:.automatic)
     let override = try CartridgeConfiguration(romCapacity:0x400000,saveLayout:detected.saveLayout)
     let target = detected.applying(override)
-    #expect(throws:(any Error).self) { try WritePlan(target:target,image:ROMImage(data:fixtureROM()),romName:"new.bin",save:nil,saveName:nil,format:.raw,backupDestination:nil,clearUnusedROM:true) }
+    let plan = try WritePlan(target:target,image:ROMImage(data:fixtureROM()),romName:"new.bin",save:nil,saveName:nil,format:.raw,backupDestination:nil,clearUnusedROM:true)
+    #expect(plan.requiredBytes == detected.romWriteLimit && plan.requiredBytes <= target.saveLayout!.base)
     #expect(device.erasures == 0)
 }
 @Test func clearingUnusedROMStillRejectsOversizedInput() throws {
@@ -148,21 +174,21 @@ import Testing
 @Test func sramOnlyNeverErasesROM() throws {
     let device = MemoryDevice(), oldROM = device.rom, target = try device.inspect(profile:.krikzz4M)
     let plan = try WritePlan(target:target,image:nil,romName:nil,save:Data(repeating:0x66,count:65536),saveName:"save.srm",format:.raw,backupDestination:nil)
-    _ = try OperationRunner.write(device:device,plan:plan,progress:{_ in})
+    _ = try testWrite(device:device,plan:plan,progress:{_ in})
     #expect(device.erasures == 0); #expect(device.rom == oldROM); #expect(device.sram[1] == 0x66)
 }
 @Test func writeMismatchNeverReportsSuccess() throws {
     let device = MemoryDevice(), target = try device.inspect(profile:.krikzz4M)
     let plan = try WritePlan(target:target,image:ROMImage(data:fixtureROM()),romName:"new.bin",save:nil,saveName:nil,format:.raw,backupDestination:nil)
     device.corruptProgram = true
-    do { _ = try OperationRunner.write(device:device,plan:plan,progress:{_ in}); Issue.record("Expected verification failure") }
+    do { _ = try testWrite(device:device,plan:plan,progress:{_ in}); Issue.record("Expected verification failure") }
     catch let failure as OperationFailure { #expect(failure.result.manifest.outcome == "failed"); #expect(failure.message.contains("incomplete")) }
 }
 @Test func staleTargetsCannotBeWritten() throws {
     let device = MemoryDevice(), target = try device.inspect(profile:.krikzz4M)
     let plan = try WritePlan(target:target,image:ROMImage(data:fixtureROM()),romName:"new.bin",save:nil,saveName:nil,format:.raw,backupDestination:nil)
     device.changedIdentity = true
-    #expect(throws:(any Error).self) { try OperationRunner.write(device:device,plan:plan,progress:{_ in}) }; #expect(device.erasures == 0)
+    #expect(throws:(any Error).self) { try testWrite(device:device,plan:plan,progress:{_ in}) }; #expect(device.erasures == 0)
 }
 @Test func preflightRejectsMismatchedLengthsAndAllowsAutomaticConfiguration() throws {
     let device = MemoryDevice(), target = try device.inspect(profile:.krikzz4M)
@@ -170,7 +196,8 @@ import Testing
     let unqualified = try device.inspect(profile:.automatic)
     _ = try WritePlan(target:unqualified,image:ROMImage(data:fixtureROM()),romName:"new.bin",save:nil,saveName:nil,format:.raw,backupDestination:nil)
     var inconsistent = fixtureROM(); inconsistent[0x1A7] = 0
-    #expect(throws:(any Error).self) { try WritePlan(target:target,image:ROMImage(data:inconsistent),romName:"bad.bin",save:nil,saveName:nil,format:.raw,backupDestination:nil) }
+    let underdeclared = try WritePlan(target:target,image:ROMImage(data:inconsistent),romName:"bad.bin",save:nil,saveName:nil,format:.raw,backupDestination:nil)
+    #expect(underdeclared.rom?.prefix(inconsistent.count) == inconsistent)
 }
 @Test func shortBackupReadsFail() throws {
     let device = MemoryDevice(), target = try device.inspect(profile:.krikzz4M), destination = try tempFolder()
@@ -182,7 +209,7 @@ import Testing
     let plan = try WritePlan(target:target,image:ROMImage(data:fixtureROM()),romName:"new.bin",save:nil,saveName:nil,format:.raw,backupDestination:nil)
     let task = Task {
         withUnsafeCurrentTask { $0?.cancel() }
-        return try OperationRunner.write(device:device,plan:plan,progress:{_ in})
+        return try testWrite(device:device,plan:plan,progress:{_ in})
     }
     do { _ = try await task.value; Issue.record("Expected cancellation") } catch {}
     #expect(device.erasures == 0)
@@ -192,7 +219,7 @@ import Testing
     let device = MemoryDevice(), target = try device.inspect(profile:.krikzz4M)
     let plan = try WritePlan(target:target,image:ROMImage(data:fixtureROM()),romName:"new.bin",save:nil,saveName:nil,format:.raw,backupDestination:nil)
     let task = Task {
-        try OperationRunner.write(device:device,plan:plan,progress:{ value in
+        try testWrite(device:device,plan:plan,progress:{ value in
             if value.phase == .erasing { withUnsafeCurrentTask { $0?.cancel() } }
         })
     }
@@ -207,7 +234,7 @@ func phaseFailuresRetainAccurateResults(phase:String) throws {
     let plan = try WritePlan(target:target,image:ROMImage(data:fixtureROM(title:"NEW GAME")),romName:"new.bin",save:Data(count:65536),saveName:"save.srm",format:.raw,backupDestination:nil)
     device.failErase = phase == "erase"; device.failProgram = phase == "program"
     device.failRestore = phase == "restore"; device.corruptRestore = phase == "save verification"
-    do { _ = try OperationRunner.write(device:device,plan:plan,progress:{_ in}); Issue.record("Expected phase failure") }
+    do { _ = try testWrite(device:device,plan:plan,progress:{_ in}); Issue.record("Expected phase failure") }
     catch let failure as OperationFailure {
         #expect(failure.result.manifest.outcome == "failed")
         #expect(!failure.result.manifest.phases.contains("SRAM verified"))
@@ -244,7 +271,7 @@ func phaseFailuresRetainAccurateResults(phase:String) throws {
     let plan = try WritePlan(target:target,image:nil,romName:nil,save:packed,saveName:"save.srm",format:.packed,backupDestination:nil)
     #expect(plan.saveLayout == layout)
     #expect(plan.inputs.first?.sha256 == hash(packed))
-    _ = try OperationRunner.write(device:device,plan:plan,progress:{_ in})
+    _ = try testWrite(device:device,plan:plan,progress:{_ in})
     #expect(try layout.pack(device.sram) == packed)
 }
 @Test func cancellationRemovesUnfinishedBackup() async throws {
@@ -297,5 +324,6 @@ func phaseFailuresRetainAccurateResults(phase:String) throws {
     let unqualified = try device.inspect(profile:.automatic)
     #expect(unqualified.flashCapacity?.bytes == 0x200000)
     #expect(unqualified.flashCapacity?.source == .estimated)
-    #expect(throws:(any Error).self) { try BackupRequest(cartridge:unqualified,romBytes:0x200001,saveLayout:nil,verify:false,destination:URL(fileURLWithPath:"/tmp")) }
+    #expect(unqualified.romReadLimit == 0x400000 && unqualified.romWriteLimit == 0x200000)
+    _ = try BackupRequest(cartridge:unqualified,romBytes:0x400000,saveLayout:nil,verify:false,destination:URL(fileURLWithPath:"/tmp"))
 }

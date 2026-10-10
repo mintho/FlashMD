@@ -7,6 +7,12 @@ The FlashKit packet protocol and flash command sequences are derived from:
   Joey Parrish, FlashKit MD Python Client, Copyright (C) 2024 (GPLv3)
   https://github.com/joeyparrish/flashkit-md-py
 
+The MD Dumper USB command layouts are independently implemented using the
+public client sources as references:
+  X-death25 / Bastien, MD Dumper software (GPLv3)
+  https://github.com/X-death25/MD_Dumper
+  md_dumper_main.h, md_dumper_read.h, md_dumper_write.h
+
 These implementations are used as protocol references. FlashMD's native
 transport, operation planner, file formats, and interface are maintained here.
 The complete license is available in LICENSE.

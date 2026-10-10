@@ -30,6 +30,18 @@ struct ActivityView: View {
                                 VStack(alignment:.leading,spacing:8) {
                                     Text("Outcome: \(manifest.outcome)")
                                     Text("Device: \(manifest.device)")
+                                    if let status = manifest.saveStatus { Text("Save memory: \(status.explanation)") }
+                                    if let serial = manifest.serialSave { Text("\(serial.displayName) · \(formatBytes(serial.addressBytes)) serial address range") }
+                                    if let scope = manifest.backupScope { Text(scope).foregroundStyle(.secondary) }
+                                    ForEach(manifest.limitations ?? [],id:\.self) { Text($0).foregroundStyle(.secondary) }
+                                    if let difference = manifest.readDifference {
+                                        Text("\(difference.memory) mismatch at 0x\(String(difference.offset,radix:16).uppercased())" + (difference.memory == "SPI save" ? "" : " · \(difference.lane == 0 ? "even" : "odd") lane"))
+                                        Text(String(format:"First read: %02X · check: %02X",Int(difference.expected),Int(difference.actual))).font(.caption.monospaced())
+                                    }
+                                    if let recovery = manifest.recoveryJournal, FileManager.default.fileExists(atPath:recovery) {
+                                        Button("Open preserved save files") { NSWorkspace.shared.open(URL(fileURLWithPath:recovery,isDirectory:true)) }
+                                    }
+                                    if let fill = manifest.unusedSaveLaneFill { Text("Unused SRAM lane: synthetic \(fill == 0 ? "00" : "FF") padding in bus-format exports") }
                                     ForEach(manifest.inputs ?? [],id: \.filename) { input in
                                         Text("Input: \(input.filename) · \(formatBytes(input.bytes))")
                                         Text(input.sha256).font(.caption.monospaced()).textSelection(.enabled)

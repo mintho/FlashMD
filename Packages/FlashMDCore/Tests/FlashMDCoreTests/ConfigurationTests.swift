@@ -18,7 +18,7 @@ import Testing
     let override = try CartridgeConfiguration(romCapacity:65536,saveLayout:target.saveLayout)
     let customized = target.applying(override)
     let plan = try WritePlan(target:customized,image:ROMImage(data:fixtureROM()),romName:"game.bin",save:nil,saveName:nil,format:.raw,backupDestination:nil)
-    let result = try OperationRunner.write(device:device,plan:plan,progress:{_ in})
+    let result = try testWrite(device:device,plan:plan,progress:{_ in})
     #expect(result.manifest.outcome == "completed")
     #expect(result.manifest.configurationOverride == override)
     #expect(throws:(any Error).self) { try BackupRequest(cartridge:customized,romBytes:65537,saveLayout:nil,verify:false,destination:URL(fileURLWithPath:"/tmp")) }
@@ -38,10 +38,21 @@ import Testing
 
 @Test func saveOnlyRestoreWorksWithoutRewritableROM() throws {
     let metadata = try ROMMetadata.parse(fixtureROM())
-    let target = CartridgeSnapshot(title:metadata.title,regions:metadata.regions,romSize:nil,flashCapacity:nil,rawSaveWindow:nil,metadata:metadata,saveLayout:metadata.saveLayout)
+    let target = CartridgeSnapshot(title:metadata.title,regions:metadata.regions,romSize:nil,flashCapacity:nil,rawSaveWindow:nil,metadata:metadata,saveLayout:metadata.saveLayout,saveStatus:.confirmed)
     #expect(!target.canWrite); #expect(target.canRestoreSave)
     let plan = try WritePlan(target:target,image:nil,romName:nil,save:Data(repeating:0x5A,count:8192),saveName:"save.srm",format:.packed,backupDestination:nil)
     #expect(plan.rom == nil); #expect(plan.saveLayout?.activeBytes == 8192)
+}
+
+@Test func disablingSaveMemoryOverridesTheHeaderDeclaration() throws {
+    let metadata = try ROMMetadata.parse(fixtureROM())
+    let target = CartridgeSnapshot(title:metadata.title,regions:metadata.regions,romSize:nil,
+        flashCapacity:nil,rawSaveWindow:nil,metadata:metadata,saveLayout:metadata.saveLayout,saveStatus:.confirmed)
+    let configured = target.applying(try .init(romCapacity:0x200000,saveLayout:nil))
+    #expect(configured.metadata?.saveLayout != nil)
+    #expect(configured.saveLayout == nil)
+    #expect(configured.saveStatus == SaveMemoryStatus.none)
+    #expect(!configured.canBackupSave && !configured.canStartSaveWrite)
 }
 
 @Test func backupRejectsChangedConfigurationBeforeReadingAnyContents() throws {
@@ -55,19 +66,20 @@ import Testing
     #expect(device.reads.isEmpty)
 }
 
-@Test func nativeAutomaticScanUsesQueriedGeometryAndDeclaredSRAMWithoutProbing() throws {
+@Test func nativeAutomaticScanQualifiesSRAMWithoutWritingTestPatterns() throws {
     let cfi = fixtureCFI(eightMB:true)
     var bus = Data(repeating:0,count:256)
     for index in cfi.indices { bus[index * 2 + 1] = cfi[index] }
-    let transport = ScriptTransport([Data([1,1]),Data(fixtureROM().prefix(512)),bus,Data([0,1]),Data([0x22,0x7E]),Data([0x22,0x10]),Data([0x22,1])])
+    let transport = try ScriptTransport(linearInspectionResponses(header:Data(fixtureROM().prefix(512)),cfiBus:bus))
     let device = try FlashKitDevice(transport:transport,path:"test")
     let snapshot = try device.inspect(profile:.automatic)
     #expect(snapshot.canWrite)
     #expect(snapshot.flashCapacity?.bytes == 0x200000)
+    #expect(snapshot.romReadLimit == 0x400000 && snapshot.romWriteLimit == 0x200000)
     #expect(snapshot.flashCapacity?.source == .estimated)
     #expect(snapshot.saveLayout?.activeBytes == 8192)
     // Inspection writes commands to the chip/registers, never a data pattern to the SRAM window.
-    #expect(!transport.writes.contains { $0.count == 6 && $0[0] == 0 && $0[1] == 0x10 })
+    #expect(!transport.writes.contains { $0.count > 16 || $0.first == 0x83 })
 }
 
 @Test func blankFlashGetsVerifiedRecoveryBackupBeforeProgramming() throws {
@@ -77,7 +89,7 @@ import Testing
     let target = try device.inspect(profile:.linearROMOnly)
     #expect(target.romSize == nil)
     let plan = try WritePlan(target:target,image:ROMImage(data:fixtureROM()),romName:"game.bin",save:nil,saveName:nil,format:.raw,backupDestination:destination)
-    let result = try OperationRunner.write(device:device,plan:plan,progress:{_ in})
+    let result = try testWrite(device:device,plan:plan,progress:{_ in})
     let folder = try #require(result.folder)
     let artifact = try #require(result.manifest.artifacts.first(where: { $0.isROM }))
     let original = try Data(contentsOf:folder.appendingPathComponent(artifact.filename))
