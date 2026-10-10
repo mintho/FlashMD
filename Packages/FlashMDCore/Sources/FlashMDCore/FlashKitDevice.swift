@@ -328,25 +328,7 @@ public final class FlashKitDevice: CartridgeDevice, @unchecked Sendable {
             self.pierSolarSPIObserveWord?(word)
             return UInt8(word & 1)
         },clockReadBytes:pierSolarSPIPipelined ? { [unowned self] count in
-            guard (1...4).contains(count) else { throw FlashMDError.invalid("Invalid SPI transfer size.") }
-            // At most 544 command bytes produce just 64 response bytes.
-            // The cartridge has separate control (09) and data (0B) registers.
-            // This bounded request avoids long command queues and USB deadlocks.
-            var commands = Data()
-            for _ in 0..<count*8 {
-                for address in [PierSolarSPIReader.controlAddress,PierSolarSPIReader.dataAddress] {
-                    let word = address >> 1
-                    commands.append(contentsOf:[0,UInt8(truncatingIfNeeded:word >> 16),0,UInt8(truncatingIfNeeded:word >> 8),0,UInt8(truncatingIfNeeded:word)])
-                    if address == PierSolarSPIReader.controlAddress { commands.append(contentsOf:[0x53,4,0x53,6]) }
-                    else { commands.append(0x42) }
-                }
-            }
-            try self.transport.write(commands,timeout:2)
-            let samples = try self.transport.read(count:count*16,timeout:2,cancellable:false)
-            guard samples.count == count*16 else { throw FlashMDError.invalid("Incomplete SPI bit samples.") }
-            return Data((0..<count).map { byte in
-                stride(from:byte*16+1,to:(byte+1)*16,by:2).reduce(UInt8(0)) { ($0 << 1) | (samples[$1] & 1) }
-            })
+            try self.readPierSolarSPIBytes(count)
         } : nil)
         let result: Result<T,any Error>
         do { result = .success(try work(spi)) } catch { result = .failure(error) }
@@ -371,6 +353,34 @@ public final class FlashKitDevice: CartridgeDevice, @unchecked Sendable {
             throw FlashMDError.invalid("The inserted cartridge does not match the Pier Solar reference. No SPI access was attempted.")
         }
     }
+    private func readPierSolarSPIBytes(_ count: Int) throws -> Data {
+        guard (1...4).contains(count) else { throw FlashMDError.invalid("Invalid SPI transfer size.") }
+        // At most 544 command bytes produce just 64 response bytes.
+        // The cartridge has separate control (09) and data (0B) registers.
+        // This bounded request avoids long command queues and USB deadlocks.
+        var commands = Data()
+        for _ in 0..<count*8 {
+            for address in [PierSolarSPIReader.controlAddress,PierSolarSPIReader.dataAddress] {
+                let word = address >> 1
+                commands.append(contentsOf:[0,UInt8(truncatingIfNeeded:word >> 16),0,UInt8(truncatingIfNeeded:word >> 8),0,UInt8(truncatingIfNeeded:word)])
+                if address == PierSolarSPIReader.controlAddress { commands.append(contentsOf:[0x53,4,0x53,6]) }
+                else { commands.append(0x42) }
+            }
+        }
+        try transport.write(commands,timeout:2)
+        let samples = try transport.read(count:count*16,timeout:2,cancellable:false)
+        guard samples.count == count*16 else { throw FlashMDError.invalid("Incomplete SPI bit samples.") }
+        var result = Data()
+        for byte in 0..<count {
+            var value: UInt8 = 0
+            for index in stride(from:byte*16+1,to:(byte+1)*16,by:2) {
+                value = (value << 1) | (samples[index] & 1)
+            }
+            result.append(value)
+        }
+        return result
+    }
+
     public func readSerialSave(offset: Int, count: Int) throws -> Data {
         guard serialSaveQualified else { throw FlashMDError.invalid("SPI save reading has not been confirmed. Scan again.") }
         return try withPierSolarSPI { spi in
