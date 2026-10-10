@@ -84,12 +84,7 @@ public struct WritePlan: Sendable {
         guard image != nil || save != nil else { throw FlashMDError.invalid("Choose a ROM and/or save file to write.") }
         guard target.serialSave == nil else { throw FlashMDError.invalid("Writing is not supported for cartridges with SPI save memory.") }
         if image != nil, !target.canWrite { throw FlashMDError.invalid("ROM writing requires a supported flash programming algorithm and known accessible capacity.") }
-        if image != nil, target.metadata?.saveWarning != nil {
-            throw FlashMDError.invalid("This cartridge declares an unsupported save type. ROM writing could erase its saves.")
-        }
-        if image != nil, target.saveLayout != nil, target.saveStatus != .confirmed, !target.canCheckSaveWriting {
-            throw FlashMDError.invalid("SRAM has not been confirmed. ROM writing cannot safely preserve existing saves.")
-        }
+        if image != nil { try target.validateROMWriteSaveProtection() }
         if image != nil, target.geometry?.mdDumperAlgorithm != nil, !clearUnusedROM, image?.data.count != target.romWriteLimit {
             throw FlashMDError.invalid("This reader clears the whole ROM chip. Enable Clear unused cartridge ROM to continue.")
         }
@@ -100,10 +95,12 @@ public struct WritePlan: Sendable {
             guard (image.metadata.declaredROMBytes ?? 0) <= image.data.count else { throw FlashMDError.invalid("The ROM file is shorter than its header declares. Check that the backup is complete.") }
             guard ROMMapper.detect(image.metadata) == .linear else { throw FlashMDError.invalid("This game needs bank switching. Writing it to a linear cartridge is not supported.") }
             if image.metadata.saveWarning != nil { throw FlashMDError.invalid("The game uses an unsupported save type.") }
-            let length = try geometry.programLength(clearUnusedROM ? target.romWriteLimit : image.data.count)
+            let length = try geometry.programLength(clearUnusedROM ? target.romWriteLimit : image.data.count,accessibleCapacity:target.romWriteLimit)
             guard length <= (target.flashCapacity?.bytes ?? 0) else { throw FlashMDError.invalid("The aligned ROM exceeds accessible flash capacity.") }
             if let layout = target.saveLayout {
-                guard length <= layout.base, geometry.sectors.filter({ $0.offset < length }).allSatisfy({ $0.offset + $0.bytes <= layout.base }) else {
+                // MD Dumper erases the flash chip at its low unlock addresses;
+                // separate, confirmed SRAM is captured and checked by the runner.
+                guard length <= layout.base, geometry.mdDumperAlgorithm != nil || geometry.sectors.filter({ $0.offset < length }).allSatisfy({ $0.offset + $0.bytes <= layout.base }) else {
                     throw FlashMDError.invalid("ROM erase/programming would overlap the SRAM address range. Correct the cartridge configuration before writing.")
                 }
             }
@@ -184,6 +181,9 @@ public struct OperationManifest: Codable, Sendable {
     public var recoveryJournal: String? = nil
     public var readDifference: ReadDifference? = nil
     public var serialSave: SerialSaveConfiguration? = nil
+    public var physicalFlashBytes: Int? = nil
+    public var erasedFlashBytes: Int? = nil
+    public var unverifiedErasedFlashBytes: Int? = nil
 }
 public struct OperationResult: Sendable {
     public let folder: URL?
@@ -326,9 +326,14 @@ public enum OperationRunner {
             }
             if let rom = plan.rom, let geometry = plan.target.geometry {
                 let sectors = geometry.sectors.filter { $0.offset < rom.count }
+                manifest.erasedFlashBytes = sectors.reduce(0) { $0 + $1.bytes }
+                manifest.unverifiedErasedFlashBytes = max(0,(manifest.erasedFlashBytes ?? 0)-rom.count)
+                if geometry.mdDumperAlgorithm != nil, geometry.capacity > rom.count {
+                    manifest.limitations?.append("Whole-chip erasure includes flash outside the accessible ROM range. Only the accessible range was programmed and verified.")
+                }
                 for (index, sector) in sectors.enumerated() {
                     try Task.checkCancellation()
-                    progress(.init(.erasing,index,sectors.count,detail: "Erasing sector \(index+1) of \(sectors.count)",cancellable:false))
+                    progress(.init(.erasing,index,sectors.count,detail: geometry.mdDumperAlgorithm != nil ? "Erasing cartridge ROM · allow up to \(Int(MDDumperDevice.chipEraseTimeout/60)) minutes" : "Erasing sector \(index+1) of \(sectors.count)",cancellable:false))
                     changed = true; try device.erase(sector: sector)
                 }
                 manifest.phases.append("ROM erased")
@@ -518,6 +523,7 @@ public enum OperationRunner {
     private static func makeManifest(_ cartridge: CartridgeSnapshot, titleOverride: String? = nil) -> OperationManifest {
         var manifest = OperationManifest(schemaVersion:2,date:Date(),device:cartridge.identity,cartridgeTitle:titleOverride ?? cartridge.title,profile:cartridge.profile,rawHeader:cartridge.rawHeader,romSize:cartridge.romSize,flashCapacity:cartridge.flashCapacity,saveLayout:cartridge.saveLayout,outcome:"in progress",artifacts:[],phases:[],error:nil)
         manifest.serialSave = cartridge.serialSave
+        manifest.physicalFlashBytes = cartridge.geometry?.capacity
         manifest.saveStatus = cartridge.saveStatus
         manifest.backupScope = "Selected ROM and/or save bytes; additional cartridge hardware storage is not included."
         manifest.limitations = ["Repeated reads verify consistency, not cartridge completeness."]

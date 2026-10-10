@@ -17,9 +17,11 @@ public protocol CartridgeDevice: AnyObject, Sendable {
     func restore(layout: SRAMLayout, raw: Data) throws
     func reset() throws
     func close()
+    func configureROMWriting(_ cartridge: CartridgeSnapshot) throws
 }
 
 public extension CartridgeDevice {
+    func configureROMWriting(_ cartridge: CartridgeSnapshot) throws {}
     func readSerialSave(offset: Int, count: Int) throws -> Data {
         throw FlashMDError.invalid("Serial save reading is not supported by this reader.")
     }
@@ -30,13 +32,17 @@ public extension CartridgeDevice {
     func inspectConfigured(profile: CartridgeProfile, override: CartridgeConfiguration?, mapper: ROMMapper) throws -> CartridgeSnapshot {
         let original = try inspect(profile:profile,mapper:mapper)
         let configured = original.applying(override)
-        if configured.serialSave != nil { return configured }
-        guard original.metadata?.saveWarning == nil else { return configured.withSaveStatus(.unsupported) }
-        guard override != nil, configured.mapper == .linear, let layout = configured.saveLayout,
-              configured.saveStatus != .confirmed else { return configured }
-        let status = try qualifySRAM(layout:layout)
-        // A manual read remains available when selection is inconclusive; writing does not.
-        return configured.withSaveStatus(status == .confirmed || status == .readOnly ? status : .manual)
+        let result: CartridgeSnapshot
+        if configured.serialSave != nil { result = configured }
+        else if original.metadata?.saveWarning != nil { result = configured.withSaveStatus(.unsupported) }
+        else if override != nil, configured.mapper == .linear, let layout = configured.saveLayout,
+                configured.saveStatus != .confirmed {
+            let status = try qualifySRAM(layout:layout)
+            // A manual read remains available when selection is inconclusive; writing does not.
+            result = configured.withSaveStatus(status == .confirmed || status == .readOnly ? status : .manual)
+        } else { result = configured }
+        try configureROMWriting(result)
+        return result
     }
     var preferredROMReadBytes: Int { 32768 }
     var requiresROMBackupVerification: Bool { false }
@@ -290,7 +296,7 @@ public final class FlashKitDevice: CartridgeDevice, @unchecked Sendable {
         if saveStatus == .confirmed { qualifiedSaveLayout = layout }
         saveWritingUnqualified = layout != nil && saveStatus != .confirmed
         qualifiedGeometry = geometry
-        programmingLimit = min(capacity?.bytes ?? 0,metadata?.saveLayout?.base ?? 0x400000)
+        programmingLimit = min(capacity?.bytes ?? 0,profile == .linearROMOnly ? 0x400000 : metadata?.saveLayout?.base ?? 0x400000)
         let snapshot = CartridgeSnapshot(title: title, regions: validHeader ? metadata?.regions ?? [] : [], romSize: validHeader ? metadata?.declaredROMBytes.map { .init(bytes: $0, source: .header) } : nil,
             flashCapacity: capacity, rawSaveWindow: layout.map { .init(bytes: $0.windowBytes, source: profile == .automatic ? .header : .profile) },
             metadata: validHeader ? metadata : nil, geometry: geometry, saveLayout: layout,
@@ -386,11 +392,42 @@ public final class FlashKitDevice: CartridgeDevice, @unchecked Sendable {
         try transport.write(Data([4,0x42]), timeout: 2)
         _ = try transport.read(count: 2, timeout: 120, cancellable: false)
     }
+    public func configureROMWriting(_ cartridge: CartridgeSnapshot) throws {
+        guard let geometry = qualifiedGeometry, cartridge.geometry == geometry,
+              cartridge.identity == identity, cartridge.canWrite, !mappedCartridge,
+              cartridge.romWriteLimit <= min(geometry.capacity,0x400000) else { return }
+        programmingLimit = cartridge.romWriteLimit
+        if cartridge.hasExplicitROMOnlyConfiguration {
+            qualifiedSaveLayout = nil; pendingSaveWriteCheck = nil; saveWritingUnqualified = false
+        }
+    }
     public func program(offset: Int, data: Data) throws {
         guard !mappedCartridge else { throw FlashMDError.invalid("Writing is unavailable for banked cartridges.") }
         guard !requiresReconnect, !saveWritingUnqualified, qualifiedGeometry?.supported == true, offset >= 0, offset.isMultiple(of:2),
               data.count > 0, data.count <= 4096, data.count.isMultiple(of: 2), offset <= programmingLimit,
               data.count <= programmingLimit-offset else { throw FlashMDError.invalid("Programming exceeds the qualified ROM area. Scan again.") }
+        if qualifiedGeometry?.usesUnlockBypass == false {
+            // Ordinary word programming avoids assuming unlock-bypass support.
+            var packet = Data()
+            func appendWord(_ value: UInt16, at byteAddress: Int) {
+                let address = byteAddress >> 1
+                packet.append(contentsOf:[0,UInt8(truncatingIfNeeded:address >> 16),0,UInt8(truncatingIfNeeded:address >> 8),0,UInt8(truncatingIfNeeded:address),
+                                          0x43,UInt8(truncatingIfNeeded:value >> 8),UInt8(truncatingIfNeeded:value)])
+            }
+            for index in stride(from:0,to:data.count,by:2) {
+                let value = UInt16(data[index]) << 8 | UInt16(data[index+1])
+                if value == 0xFFFF { continue }
+                appendWord(0xAA,at:0xAAA); appendWord(0x55,at:0x554)
+                appendWord(0xA0,at:0xAAA); appendWord(value,at:offset+index)
+                packet.append(4) // Wait for the chip to stop toggling.
+            }
+            if !packet.isEmpty {
+                try transport.write(packet,timeout:30)
+                try transport.write(Data([0x42]),timeout:2)
+                _ = try transport.read(count:2,timeout:30,cancellable:false)
+            }
+            return
+        }
         try byte(0xAA, at: 0xAAA); try byte(0x55, at: 0x554); try byte(0x20, at: 0xAAA)
         try address(offset)
         var packet = Data()

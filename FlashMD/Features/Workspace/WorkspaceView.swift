@@ -21,6 +21,12 @@ struct WorkspaceView: View {
             Button("Cancel",role:.cancel) { model.invalidateReview() }
             Button(model.writeActionTitle,role:.destructive) { model.confirmWrite() }
         } message: { Text(model.writeConfirmationMessage) }
+        .alert("Does this cartridge have SRAM?",isPresented:$model.showSRAMQuestion) {
+            Button("Cancel",role:.cancel) { model.cancelSRAMQuestion() }
+            Button("This cartridge has no SRAM") { model.confirmCartridgeHasNoSRAM() }
+        } message: {
+            Text("The game declares SRAM, but it could not be detected. If the board has no SRAM, FlashMD can continue with ROM only. Otherwise, cancel to protect your saves.")
+        }
         .alert("Couldn’t complete the action",isPresented:Binding(get:{model.errorMessage != nil},set:{if !$0 {model.errorMessage = nil}})) {
             Button("OK") { model.errorMessage = nil }
         } message: { Text(model.errorMessage ?? "") }

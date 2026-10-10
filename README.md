@@ -6,6 +6,16 @@ Insert a cartridge, click **Scan Cartridge**, then choose **Backup** or **Write*
 
 ![FlashMD start screen](Screenshots/start.png)
 
+## Download and install
+
+[Download the latest FlashMD release](https://github.com/mintho/FlashMD/releases/latest). The app is signed with an Apple Developer ID certificate and notarized by Apple. It runs on both Apple Silicon and Intel Macs with macOS 14 or later.
+
+1. Download the ZIP file from the release's **Assets** section.
+2. Open the ZIP and drag **FlashMD.app** into **Applications**.
+3. Open FlashMD, connect your programmer and scan the cartridge.
+
+When updating, quit FlashMD before replacing the app in Applications.
+
 ## What you need
 
 - **macOS 14 Sonoma or later.**
@@ -67,6 +77,12 @@ ROM writing requires a **compatible writable flash cartridge**; the ROM chips in
 
 For MD Dumper, FlashMD prepares ROM writing automatically in the main panel. When asked, leave the cartridge inserted, turn the reader off, wait three seconds, then turn it back on. USB can stay connected. Click **Continue**; FlashMD checks the original ROM and confirms the flash capacity before showing the write confirmation. If the reader is not ready yet, you can try Continue again. Preparation does not write ROM or SRAM.
 
+Large ROMs take longer to write, but there is no time limit for the whole transfer. FlashMD waits for each programming block and verifies the result. MD Dumper chip erasure can take several minutes; FlashMD allows up to five minutes and proceeds as soon as the reader confirms completion.
+
+FlashMD distinguishes **physical flash size** from **accessible ROM capacity**. A cartridge can contain an 8 MiB chip while exposing only 4 MiB without bank switching. Supported chips can be written within that accessible range. MD Dumper erases the entire physical ROM chip; FlashMD programs and verifies the accessible range and explains the erase scope before you confirm. This does not enable writing banked games.
+
+If the old game declares SRAM but FlashMD cannot detect it, clicking **Write…** asks whether the cartridge has SRAM. For a board without SRAM, choose **This cartridge has no SRAM**; FlashMD checks the cartridge again and continues with ROM only. Otherwise, cancel to protect your saves. This choice applies to the current scan and resets when you scan again. Advanced Settings still offers manual configuration. Confirmed save memory remains protected, and unknown programming algorithms stay unavailable.
+
 **Writing ROM or SRAM on banked cartridges is currently unsupported on both programmers.**
 
 ## Your backup files
@@ -116,6 +132,8 @@ Both programmers can back up standard Mega Drive / Genesis ROMs and SRAM saves. 
 
 **SRAM saves:** FlashMD checks the detected memory layout before offering save transfers. Some layouts allow backup only. MD Dumper supports the common odd-address SRAM layout, which stores one save byte per bus word.
 
+**Writable flash chips:** FlashKit uses CFI queries to read chip capacity and erase layout, with programming paths for supported AMD/Spansion, ST and Macronix families. MD Dumper uses its documented chip algorithms, including 8 MiB parts with a smaller accessible range. Shared Spansion IDs require matching extended identification. MD Dumper chip queries happen during write preparation so routine scans and backups do not require a restart. Additional chip paths are covered by protocol tests; not every chip model has been tested on a physical cartridge.
+
 **Special hardware:** EEPROM and other custom save protocols are not yet supported. Separate storage for extra cartridge hardware, such as audio chips, is not included in a ROM or save backup.
 
 Verification checks that repeated reads match. It cannot prove that every part of an unknown cartridge design has been captured. A complete-ROM backup includes the accessible range, not unsupported banks or separate hardware storage.
@@ -130,6 +148,8 @@ Most transfers start with a scan. Open **Advanced Settings** when you need to se
 
 - **No programmer found:** check USB and the power switch. Close other dumper applications and scan again.
 - **Unreadable header:** restart the reader as instructed with the cartridge still inserted, then scan again.
+- **Write timeout or MD Dumper no longer responding:** keep it powered until the activity LEDs stop. Leave the cartridge inserted, turn the dumper off for at least three seconds, then turn it on and scan again. If it still cannot connect, turn it off and disconnect/reconnect USB before turning it on again. Scan opens a fresh connection; it does not reboot the programmer.
+- **Blank cartridge after an interrupted write:** restarting restores the reader connection, not the game. FlashMD can recognise an erased cartridge; rewrite it from the original ROM file and wait for verification to finish.
 - **Verification failed:** check Activity, restart the reader as instructed and scan again. Treat the backup or write as incomplete until verification succeeds.
 - **Wrong title:** click the pencil beside the title. This changes the display name and backup filenames, not the cartridge itself.
 

@@ -4,6 +4,9 @@ import Foundation
 /// md_dumper_main.h, md_dumper_read.h and md_dumper_write.h.
 /// Streaming is opt-in and restricted to the hardware/firmware tested on real cartridges.
 public final class MDDumperDevice: CartridgeDevice, @unchecked Sendable {
+    // S29GL064N specifies up to 128 seconds for chip erase, excluding internal
+    // pre-programming. Leave margin for that work and the firmware/USB reply.
+    static let chipEraseTimeout: TimeInterval = 300
     private let transport: any ByteTransport
     public let identity: String
     public let firmwareMajor: UInt8
@@ -33,6 +36,7 @@ public final class MDDumperDevice: CartridgeDevice, @unchecked Sendable {
     private var unavailableMessage: String?
     private var flash: MDDumperFlash?
     private var preparedHeader: String?
+    private var preparedWriteLimit: Int?
     var pierSolarSaveEnabled = PierSolarSaveSupport.mdDumperQualified
     var pierSolarSPIObserveWord: ((UInt16) -> Void)?
     private var serialSaveQualified = false
@@ -73,11 +77,7 @@ public final class MDDumperDevice: CartridgeDevice, @unchecked Sendable {
         return data
     }
     private func waitStatus(index: Int, value: UInt8, timeout: TimeInterval) throws {
-        let deadline = Date().addingTimeInterval(timeout)
-        while Date() < deadline {
-            if try reply(timeout:min(5,max(0.001,deadline.timeIntervalSinceNow)))[index] == value { return }
-        }
-        throw FlashMDError.timeout
+        try MDDumperStatus.wait(transport:transport,index:index,value:value,timeout:timeout)
     }
     private func readBus(offset: Int, count: Int, cancellable: Bool = false) throws -> Data {
         guard offset >= 0, count >= 0, offset <= 0x400000, count <= 0x400000-offset else {
@@ -202,7 +202,7 @@ public final class MDDumperDevice: CartridgeDevice, @unchecked Sendable {
     public func inspect(profile: CartridgeProfile, mapper selection: ROMMapper) throws -> CartridgeSnapshot {
         try reset(); bankedReader = nil; ssf2SaveLayout = nil; ssf2SaveProbe = nil; linearSaveLayout = nil; unavailable = false; unavailableMessage = nil; serialSaveQualified = false
         let header = try readBus(offset:0,count:512)
-        if preparedHeader != hash(header) { flash = nil; preparedHeader = nil }
+        if preparedHeader != hash(header) { flash = nil; preparedHeader = nil; preparedWriteLimit = nil }
         let valid = Data(header[0x100..<0x104]) == Data("SEGA".utf8)
         let metadata = valid ? try? ROMMetadata.parse(header) : nil
         let detected = ROMMapper.detect(metadata)
@@ -211,7 +211,7 @@ public final class MDDumperDevice: CartridgeDevice, @unchecked Sendable {
         }
         let mapper = selection == .automatic ? detected : selection
         if mapper != .linear || (metadata?.declaredROMBytes ?? 0) > 0x400000 {
-            flash = nil; preparedHeader = nil
+            flash = nil; preparedHeader = nil; preparedWriteLimit = nil
             let size = mapper.scanLimit
             var qualified = false
             // SSF2 register F9 is documented by the public client. Pier Solar's
@@ -278,7 +278,7 @@ public final class MDDumperDevice: CartridgeDevice, @unchecked Sendable {
         }
         // Never query flash IDs during scan/backup. A separately prepared chip
         // is accepted only after reconnecting and checking the pre-query ROM.
-        guard valid || flash != nil else {
+        guard valid || flash != nil || header.allSatisfy({ $0 == 0xFF }) else {
             unavailable = true; readLimit = 0; physicalReadLimit = 0x400000
             let message = "Game data could not be read. Turn the reader off, unplug USB, then reconnect with the cartridge still inserted."
             unavailableMessage = message
@@ -290,9 +290,8 @@ public final class MDDumperDevice: CartridgeDevice, @unchecked Sendable {
         // Published SRAM commands expose the odd lane only, not a two-lane bus dump.
         let declared = metadata?.saveWarning == nil ? (profile == .automatic ? metadata?.saveLayout : profile.saveLayout) : nil
         let layout = declared?.lane == 1 ? declared : nil
-        physicalReadLimit = flash?.capacity ?? 0x400000
-        readLimit = min(profile.romCapacityLimit ?? physicalReadLimit,physicalReadLimit,layout?.base ?? 0x400000)
-        if let flash, flash.capacity != readLimit { self.flash = nil; preparedHeader = nil }
+        physicalReadLimit = min(flash?.capacity ?? 0x400000,0x400000)
+        readLimit = min(profile.romCapacityLimit ?? physicalReadLimit,physicalReadLimit,layout?.base ?? 0x400000,preparedWriteLimit ?? 0x400000)
         let saveStatus: SaveMemoryStatus
         if let layout, firmwareMajor == 2, firmwareMinor == 0, board == 3 {
             saveStatus = try qualifySRAM(layout:layout)
@@ -302,7 +301,7 @@ public final class MDDumperDevice: CartridgeDevice, @unchecked Sendable {
             flash == nil ? "Prepare ROM writing to identify the flash chip." : "ROM writing available. The whole ROM chip will be erased."
         return .init(title:metadata?.title ?? "Blank cartridge",regions:metadata?.regions ?? [],
             romSize:metadata?.declaredROMBytes.map { .init(bytes:$0,source:.header) },
-            flashCapacity:.init(bytes:readLimit,source:flash == nil ? .estimated : .hardware),
+            flashCapacity:.init(bytes:readLimit,source:flash?.capacity == readLimit ? .hardware : .estimated),
             rawSaveWindow:layout.map { .init(bytes:$0.windowBytes,source:.header) },metadata:metadata,
             geometry:flash?.geometry,saveLayout:layout,identity:identity,fingerprint:hash(header),warning:warning,
             profile:profile,rawHeader:Data(header[0x100..<0x200]),mapperSelection:selection,readerKind:.mdDumper,saveWriteSupported:linearSaveLayout?.activeBytes.isMultiple(of:32) == true,
@@ -380,7 +379,7 @@ public final class MDDumperDevice: CartridgeDevice, @unchecked Sendable {
         }
         let header = try readBus(offset:0,count:512)
         guard hash(header) == cartridge.fingerprint else { throw FlashMDError.invalid("The cartridge changed. Scan again.") }
-        let limit = min(cartridge.flashCapacity?.bytes ?? 0x400000,cartridge.saveLayout?.base ?? 0x400000,cartridge.metadata?.saveLayout?.base ?? 0x400000)
+        let limit = cartridge.romWriteAddressLimit
         let digest = try preparationDigest(bytes:limit,progress:progress)
         try Task.checkCancellation()
         // From this point even a timeout requires a physical restart.
@@ -389,9 +388,30 @@ public final class MDDumperDevice: CartridgeDevice, @unchecked Sendable {
         do {
             try transport.write(packet(0x18),timeout:5)
             let identification = try reply()
-            guard let chip = MDDumperFlash.lookup(manufacturer:identification[1],chip:identification[3]),
-                  chip.capacity <= limit else {
-                throw FlashMDError.invalid("This flash chip is not supported for ROM writing.")
+            let manufacturer = identification[1], deviceID = identification[3]
+            var extendedIDs: [UInt16] = []
+            if manufacturer == 0x01, deviceID == 0x7E {
+                // 7E is shared by several Spansion parts. Read the complete
+                // autoselect IDs; never infer capacity from the truncated ID.
+                // This one bounded autoselect read is part of identification;
+                // ordinary bus access is already locked until the restart.
+                try transport.write(packet(0x11,address:0),timeout:5)
+                let bus = try reply()
+                func word(_ at: Int) -> UInt16 { UInt16(bus[at]) << 8 | UInt16(bus[at+1]) }
+                extendedIDs = [word(0),word(2),word(0x1C),word(0x1E)]
+                try transport.write(packet(0x11,address:0),timeout:5)
+                let confirmation = try reply()
+                let confirmed = [0,2,0x1C,0x1E].map { UInt16(confirmation[$0]) << 8 | UInt16(confirmation[$0+1]) }
+                guard confirmed == extendedIDs else { throw FlashMDError.invalid("Flash chip identification changed between reads. Writing has not started.") }
+            }
+            guard let chip = MDDumperFlash.lookup(manufacturer:manufacturer,chip:deviceID,extendedIDs:extendedIDs) else {
+                let id = String(format:"%02X:%02X",manufacturer,deviceID)
+                let reason = manufacturer == 0x01 && deviceID == 0x7E
+                    ? "The flash chip (\(id)) could not be identified reliably. Writing has not started."
+                    : manufacturer == 0xC2 && deviceID == 0xF9
+                    ? "This flash chip needs a programming protocol that FlashMD does not support yet (\(id))."
+                    : "No supported programming algorithm was found for flash chip \(id). Writing has not started."
+                throw FlashMDError.invalid(reason)
             }
             return .init(identity:identity,chip:chip,bytes:limit,digest:digest,header:hash(header))
         } catch {
@@ -403,19 +423,28 @@ public final class MDDumperDevice: CartridgeDevice, @unchecked Sendable {
                                      progress: ProgressHandler = { _ in }) throws {
         guard identity == preparation.identity, cartridge.mapper == .linear, bankedReader == nil,
               cartridge.fingerprint == preparation.header,
-              preparation.chip.capacity <= (cartridge.saveLayout?.base ?? 0x400000),
-              preparation.chip.capacity <= (cartridge.metadata?.saveLayout?.base ?? 0x400000),
-              preparation.chip.capacity <= (cartridge.flashCapacity?.bytes ?? 0x400000) else {
+              preparation.bytes == cartridge.romWriteAddressLimit else {
             throw FlashMDError.invalid("The cartridge differs from the original read, or the reader has not restarted. Leave the original cartridge inserted, turn the MD Dumper off, wait three seconds, then turn it on and continue.")
         }
         guard try preparationDigest(bytes:preparation.bytes,progress:progress) == preparation.digest else {
             throw FlashMDError.invalid("The cartridge ROM no longer matches the original read. Writing has not started. Check that the original cartridge is inserted and restart the MD Dumper before continuing.")
         }
         flash = preparation.chip; preparedHeader = preparation.header
+        preparedWriteLimit = min(preparation.chip.capacity,preparation.bytes,0x400000)
+    }
+
+    public func configureROMWriting(_ cartridge: CartridgeSnapshot) throws {
+        guard let flash, let preparedWriteLimit, cartridge.geometry == flash.geometry,
+              cartridge.identity == identity, cartridge.fingerprint == preparedHeader,
+              cartridge.canWrite else { return }
+        guard cartridge.romWriteLimit <= preparedWriteLimit else {
+            throw FlashMDError.invalid("ROM capacity changed after preparation. Cancel and prepare ROM writing again with the new settings.")
+        }
+        readLimit = cartridge.romWriteLimit
     }
 
     private func preparationDigest(bytes: Int, progress: ProgressHandler) throws -> String {
-        guard (512...0x400000).contains(bytes) else { throw FlashMDError.invalid("Unsupported ROM preparation range.") }
+        guard (512...0x400000).contains(bytes), bytes.isMultiple(of:2) else { throw FlashMDError.invalid("ROM capacity must be an even byte count between 512 bytes and 4 MiB.") }
         var contents = Data()
         for offset in stride(from:0,to:bytes,by:32768) {
             try Task.checkCancellation()
@@ -518,25 +547,65 @@ public final class MDDumperDevice: CartridgeDevice, @unchecked Sendable {
     }
     public func erase(sector: FlashSector) throws {
         guard bankedReader == nil, !unavailable, let flash, sector.offset == 0,
-              sector.bytes == flash.capacity, flash.capacity == readLimit else { throw FlashMDError.invalid("This MD Dumper flash erase is not supported.") }
+              sector.bytes == flash.capacity, let preparedWriteLimit, readLimit > 0,
+              readLimit <= preparedWriteLimit, readLimit <= min(flash.capacity,0x400000) else { throw FlashMDError.invalid("This MD Dumper flash erase is not supported.") }
         var command = packet(0x15); command[1] = flash.eraseAlgorithm
-        try send(command); try waitStatus(index:0,value:0xFF,timeout:120)
+        do {
+            try send(command)
+            try waitStatus(index:0,value:0xFF,timeout:Self.chipEraseTimeout)
+        } catch {
+            // A host timeout cannot cancel an erase already running in firmware.
+            // Close the uncertain session; never resend the destructive command.
+            requiresPowerCycle = true; transport.close()
+            let detail = error as? FlashMDError == .timeout ? "ROM erasure was not confirmed within \(Int(Self.chipEraseTimeout/60)) minutes." : "ROM erasure was not confirmed: \(error.localizedDescription)"
+            throw FlashMDError.invalid(detail + " Wait until the activity LEDs stop, then restart the MD Dumper before trying again.")
+        }
         algorithmSelected = false
     }
     public func program(offset: Int, data: Data) throws {
-        guard bankedReader == nil, !unavailable, let flash, flash.capacity == readLimit,
+        guard !requiresPowerCycle else { throw FlashMDError.invalid(reconnectMessage) }
+        guard bankedReader == nil, !unavailable, let flash, let preparedWriteLimit,
+              readLimit <= preparedWriteLimit, readLimit <= min(flash.capacity,0x400000),
               offset >= 0, offset.isMultiple(of:2), !data.isEmpty, data.count.isMultiple(of:2),
               offset <= readLimit, data.count <= readLimit-offset else { throw FlashMDError.invalid("Unsupported MD Dumper flash write.") }
-        if !algorithmSelected {
-            var command = packet(0x65); command[4] = flash.writeAlgorithm
-            try send(command); try waitStatus(index:6,value:0xDD,timeout:10); algorithmSelected = true
+        do {
+            if !algorithmSelected {
+                var command = packet(0x65); command[4] = flash.writeAlgorithm
+                try send(command); try waitStatus(index:6,value:0xDD,timeout:10); algorithmSelected = true
+            }
+            try MDDumperROMProgramming.write(offset:offset,data:data,transport:transport)
+        } catch {
+            // Firmware may still be programming after a host read timeout.
+            // Discard the session so a delayed completion cannot become a handshake.
+            requiresPowerCycle = true; transport.close()
+            throw FlashMDError.invalid("ROM writing stopped: \(error.localizedDescription) Wait until the activity LEDs stop, then restart the MD Dumper before trying again.")
         }
-        try MDDumperROMProgramming.write(offset:offset,data:data,transport:transport)
     }
 }
 
-/// The firmware acknowledges each programming packet, not just algorithm selection.
-/// Consume the reply before another command so it cannot become ROM readback data.
+enum MDDumperStatus {
+    /// Firmware may remain silent throughout a chip erase. Short USB read
+    /// timeouts are polls, not failures of the overall operation.
+    static func wait(transport: any ByteTransport, index: Int, value: UInt8, timeout: TimeInterval,
+                     uptime: () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }) throws {
+        let deadline = uptime() + timeout
+        while true {
+            let remaining = deadline - uptime()
+            guard remaining > 0 else { throw FlashMDError.timeout }
+            do {
+                let data = try transport.read(count:64,timeout:min(5,remaining),cancellable:false)
+                guard data.count == 64 else { throw FlashMDError.invalid("Incomplete MD Dumper reply. Reconnect USB.") }
+                if data[index] == value { return }
+            } catch FlashMDError.timeout {
+                // Continue waiting for this command's acknowledgement only.
+            }
+        }
+    }
+}
+
+/// Firmware returns one completion packet per programming packet. It reuses the
+/// algorithm-selection buffer, then clears byte 6: the first status can be DD,
+/// followed by 00. Consume every reply; successful writing still requires readback.
 enum MDDumperROMProgramming {
     static func write(offset: Int, data: Data, transport: any ByteTransport) throws {
         guard offset >= 0, offset.isMultiple(of:2), !data.isEmpty, data.count.isMultiple(of:2),
@@ -555,8 +624,9 @@ enum MDDumperROMProgramming {
             command.replaceSubrange(5..<5+length,with:data[start..<start+length])
             try transport.write(command,timeout:5)
             let acknowledgement = try transport.read(count:64,timeout:10,cancellable:false)
-            guard acknowledgement.count == 64, acknowledgement[6] == 0xDD else {
-                throw FlashMDError.invalid("MD Dumper did not confirm the ROM write. Reconnect the reader before trying again.")
+            guard acknowledgement.count == 64,
+                  acknowledgement[6] == 0xDD || acknowledgement[6] == 0 else {
+                throw FlashMDError.invalid("Unexpected MD Dumper programming reply at byte 0x\(String(offset+start,radix:16).uppercased()).")
             }
         }
     }
@@ -577,7 +647,7 @@ struct MDDumperFlash: Sendable {
     let eraseAlgorithm: UInt8
     let writeAlgorithm: UInt8
     var geometry: FlashGeometry { .init(mdDumperCapacity:capacity,manufacturer:UInt16(manufacturer),deviceID:UInt16(chip),algorithm:Int(writeAlgorithm)) }
-    static func lookup(manufacturer: UInt8, chip: UInt8) -> Self? {
+    static func lookup(manufacturer: UInt8, chip: UInt8, extendedIDs: [UInt16] = []) -> Self? {
         // Explicit allowlist from the public flashlist.csv; algorithm 5 uses a
         // separate buffered protocol and is intentionally not treated as algorithm 1–4.
         let id = Int(manufacturer) << 8 | Int(chip)
@@ -585,8 +655,16 @@ struct MDDumperFlash: Sendable {
         switch id {
         case 0xBFB7: entry = (0x100000,1,1)
         case 0xBF53,0xBF5A,0xBF5B: entry = (0x400000,2,1)
+        case 0xBF6B: entry = (0x800000,2,1)
         case 0x2056,0x2057,0xB0E3: entry = (0x400000,2,2)
+        case 0x20ED,0xC2FC: entry = (0x800000,2,2)
         case 0xC2A7,0xC2A8: entry = (0x400000,2,3)
+        case 0xC2CB,0xC2C9: entry = (0x800000,2,3)
+        case 0x017E:
+            guard extendedIDs.count == 4, extendedIDs[0] == 0x0001,
+                  extendedIDs[1] == 0x227E, extendedIDs[2] == 0x2210,
+                  [UInt16(0x2200),0x2201].contains(extendedIDs[3]) else { return nil }
+            entry = (0x800000,3,4)
         case 0x98C2: entry = (0x200000,2,2)
         default: return nil
         }

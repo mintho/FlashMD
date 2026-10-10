@@ -130,6 +130,34 @@ public actor ProgrammerController {
         }
         pendingROMPreparation = (path,try dumper.prepareROMWriting(cartridge:cartridge,progress:progress))
     }
+    /// Accept a user-confirmed ROM-only board only after checking the original
+    /// configuration again. This does not authorize erase or programming.
+    public func confirmROMOnlyCartridge(_ expected: CartridgeSnapshot, mdDumperStreaming: Bool = false) throws -> CartridgeSnapshot {
+        guard !operationRunning, expected.canConfirmNoSRAMForROMWriting else {
+            throw FlashMDError.invalid("The SRAM configuration changed. Scan again before writing.")
+        }
+        func matches(_ fresh: CartridgeSnapshot) -> Bool {
+            fresh.identity == expected.identity && fresh.fingerprint == expected.fingerprint &&
+            fresh.mapper == expected.mapper && fresh.romReadLimit == expected.romReadLimit
+        }
+        var fresh = try inspect(profile:expected.profile,override:expected.configurationOverride,mapper:expected.mapperSelection)
+        guard matches(fresh), fresh.geometry == expected.geometry else {
+            throw FlashMDError.invalid("The cartridge changed. Scan again before writing.")
+        }
+        let configuration = try fresh.romOnlyConfigurationForWriting()
+        if device is MDDumperDevice, fresh.geometry != nil {
+            // A previous preparation may cover only the old SRAM-limited range.
+            // Reopen to discard that authorization, then prepare the new range.
+            guard let path = connectedPath else { throw FlashMDError.disconnected }
+            try connect(path:path,mdDumperStreaming:mdDumperStreaming)
+            fresh = try inspect(profile:expected.profile,override:expected.configurationOverride,mapper:expected.mapperSelection)
+            guard matches(fresh) else { throw FlashMDError.invalid("The cartridge changed. Scan again before writing.") }
+            _ = try fresh.romOnlyConfigurationForWriting()
+        }
+        let result = fresh.applying(configuration)
+        try device?.configureROMWriting(result)
+        return result
+    }
     public func continueMDDumperROMWriting(profile: CartridgeProfile, override: CartridgeConfiguration? = nil,
                                          mapper: ROMMapper = .automatic, mdDumperStreaming: Bool = false,
                                          progress: @escaping ProgressHandler) throws -> CartridgeSnapshot {

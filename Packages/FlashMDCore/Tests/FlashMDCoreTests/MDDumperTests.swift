@@ -13,6 +13,9 @@ private final class DumperWire: ByteTransport, @unchecked Sendable {
     var flashID: (UInt8,UInt8) = (0,0)
     var identificationMode = false
     var leaveIdentificationMode = false
+    var identificationWords: [Int: UInt16] = [:]
+    var eraseReadTimeouts = 0
+    var eraseReadFailure: FlashMDError?
     var rom: Data
     var save = Data((0..<32768).map { UInt8(truncatingIfNeeded:$0 * 7) })
     var page = 4
@@ -21,6 +24,7 @@ private final class DumperWire: ByteTransport, @unchecked Sendable {
     var shortReply = false
     var statusValue: UInt8 = 0xAA
     var programAcknowledgement: UInt8? = 0xDD
+    var clearsProgrammingStatusAfterReply = false
     var streamAddress: Int?
     var staleAfterStop: Data?
     var streamingFailure: Error?
@@ -107,11 +111,16 @@ private final class DumperWire: ByteTransport, @unchecked Sendable {
             rom.replaceSubrange(address..<address+length,with:data[5..<5+length])
             if let programAcknowledgement {
                 var ack = Data(repeating:0,count:64); ack[6] = programAcknowledgement; pending = ack
+                if clearsProgrammingStatusAfterReply { self.programAcknowledgement = 0 }
             }
         default: Issue.record("Unexpected command \(data[0])")
         }
     }
     func read(count: Int, timeout: TimeInterval, cancellable: Bool) throws -> Data {
+        if commands.last?.first == 0x15 {
+            if eraseReadTimeouts > 0 { eraseReadTimeouts -= 1; throw FlashMDError.timeout }
+            if let failure = eraseReadFailure { eraseReadFailure = nil; throw failure }
+        }
         if let staleAfterStop { self.staleAfterStop = nil; return staleAfterStop }
         if let pending {
             self.pending = nil
@@ -138,7 +147,14 @@ private final class DumperWire: ByteTransport, @unchecked Sendable {
         throw FlashMDError.timeout
     }
     private func bus(address: Int, count: Int) -> Data {
-        if identificationMode { return Data(repeating:0x7E,count:count) }
+        if identificationMode {
+            var result = Data(repeating:0x7E,count:count)
+            for (offset,word) in identificationWords where offset >= address && offset+1 < address+count {
+                result[offset-address] = UInt8(truncatingIfNeeded:word >> 8)
+                result[offset-address+1] = UInt8(truncatingIfNeeded:word)
+            }
+            return result
+        }
         if saveControl == 3 || alwaysVisibleSave, (0x200000..<(mirroredVisibleSave ? 0x400000 : 0x210000)).contains(address) {
             var data = Data((address..<address+count).map { $0 & 1 == 1 ? save[(($0-0x200000) % 0x10000)/2] : 0xFF })
             if floatingVisibleLane, address.isMultiple(of:512) {
@@ -164,6 +180,31 @@ private final class DumperWire: ByteTransport, @unchecked Sendable {
     }
     func close() { closed = true }
     func device(streaming: Bool = false) throws -> MDDumperDevice { try MDDumperDevice(transport:self,location:"test-usb",streaming:streaming) }
+}
+
+@Test func mdDumperROMOnlyConfirmationDiscardsPreparationForTheOldSaveLimitedRange() async throws {
+    let wire = DumperWire(); wire.flashID = (0x20,0xED)
+    wire.save = Data(repeating:0xFF,count:32768)
+    let originalROM = wire.rom, originalSave = wire.save
+    let controller = ProgrammerController(makeDevice:{ _,_ in try wire.device() })
+    try await controller.connect(path:"md-dumper:123")
+    let scanned = try await controller.inspect(profile:.automatic)
+    #expect(scanned.canConfirmNoSRAMForROMWriting && scanned.romWriteAddressLimit == 0x200000)
+    // Reproduce a preparation completed before the user resolves the stale header.
+    try await controller.prepareMDDumperROMWriting(scanned,progress:{_ in})
+    let prepared = try await controller.continueMDDumperROMWriting(profile:.automatic,progress:{_ in})
+    #expect(prepared.canWrite && prepared.romWriteLimit == 0x200000)
+    let configured = try await controller.confirmROMOnlyCartridge(prepared)
+    #expect(configured.geometry == nil && !configured.canWrite)
+    #expect(configured.romWriteAddressLimit == 0x400000 && configured.hasExplicitROMOnlyConfiguration)
+    #expect(wire.commands.filter { $0[0] == 0x18 }.count == 1)
+    try await controller.prepareMDDumperROMWriting(configured,progress:{_ in})
+    let ready = try await controller.continueMDDumperROMWriting(profile:configured.profile,
+        override:configured.configurationOverride,progress:{_ in})
+    #expect(ready.canWrite && ready.romWriteLimit == 0x400000 && ready.saveLayout == nil)
+    #expect(wire.commands.filter { $0[0] == 0x18 }.count == 2)
+    #expect(!wire.commands.contains { [UInt8(0x13),0x14,0x15,0x65].contains($0[0]) })
+    #expect(wire.rom == originalROM && wire.save == originalSave)
 }
 
 @Test func mdDumperSoleilFloatingUnusedLaneKeepsTwoMiBROMAndEightKiBSave() throws {
@@ -426,6 +467,21 @@ func stableResidueOrMultipleDataBitsCannotQualifySaveMemory(evidence: (UInt8,Boo
     #expect(wire.commands.count == 3)
     #expect(Data(wire.rom[0x10000..<0x10080]) == source)
     var read = Data(repeating:0,count:64); read[0] = 0x11; read[2] = 0x80
+    try wire.write(read,timeout:2)
+    #expect(try wire.read(count:64,timeout:2,cancellable:false) == Data(source.prefix(64)))
+}
+
+@Test(arguments:[UInt8(0xDD),0]) func mdDumperProgrammingAcceptsClearedFirmwareStatusAcrossBlocks(initialStatus: UInt8) throws {
+    let wire = DumperWire(), source = Data((0..<8192).map { UInt8(truncatingIfNeeded:$0*7) })
+    wire.programAcknowledgement = initialStatus
+    wire.clearsProgrammingStatusAfterReply = true
+    for offset in stride(from:0,to:source.count,by:4096) {
+        try MDDumperROMProgramming.write(offset:offset,data:Data(source[offset..<offset+4096]),transport:wire)
+    }
+    #expect(wire.pending == nil)
+    #expect(wire.commands.count == 152)
+    #expect(Data(wire.rom.prefix(source.count)) == source)
+    var read = Data(repeating:0,count:64); read[0] = 0x11
     try wire.write(read,timeout:2)
     #expect(try wire.read(count:64,timeout:2,cancellable:false) == Data(source.prefix(64)))
 }
@@ -852,13 +908,58 @@ func mdDumperSSF2SaveControlIsRestrictedToQualifiedFirmware(version: (Int,Int,In
 @Test func mdDumperPreparationAllowsBlankKnownChip() throws {
     let wire = DumperWire(); wire.rom = Data(repeating:0xFF,count:0x400000); wire.flashID = (0xBF,0xB7)
     let device = try wire.device(), snapshot = try device.inspect(profile:.automatic)
-    #expect(!snapshot.canWrite && !snapshot.canBackupROM)
+    #expect(!snapshot.canWrite && snapshot.canBackupROM && snapshot.title == "Blank cartridge")
     let preparation = try device.prepareROMWriting(cartridge:snapshot,progress:{_ in})
     let reconnected = try wire.device(), fresh = try reconnected.inspect(profile:.automatic)
     try reconnected.acceptROMWritingPreparation(preparation,cartridge:fresh)
     let writable = try reconnected.inspect(profile:.automatic)
     #expect(writable.title == "Blank cartridge" && writable.canWrite && writable.canBackupROM)
     #expect(writable.romReadLimit == 0x100000)
+}
+
+@Test(arguments:[false,true])
+func mdDumperEraseWaitsForCompletionOrClosesAnUncertainSession(disconnect: Bool) throws {
+    let wire = DumperWire(); wire.rom = Data(repeating:0xFF,count:0x400000); wire.flashID = (0x20,0xED)
+    let device = try wire.device(), initial = try device.inspect(profile:.automatic)
+    #expect(initial.canBackupROM && initial.title == "Blank cartridge")
+    let preparation = try device.prepareROMWriting(cartridge:initial,progress:{_ in})
+    let reconnected = try wire.device(), fresh = try reconnected.inspect(profile:.automatic)
+    try reconnected.acceptROMWritingPreparation(preparation,cartridge:fresh)
+    let writable = try reconnected.inspect(profile:.automatic)
+    let sector = try #require(writable.geometry?.sectors.first)
+    wire.eraseReadTimeouts = 7; wire.closed = false
+    if disconnect {
+        wire.eraseReadFailure = .disconnected
+        #expect(throws:(any Error).self) { try reconnected.erase(sector:sector) }
+        #expect(wire.closed)
+        #expect(throws:(any Error).self) { try reconnected.reset() }
+        let before = wire.commands.count
+        #expect(throws:(any Error).self) { try reconnected.inspect(profile:.automatic) }
+        #expect(wire.commands.count == before)
+    } else {
+        try reconnected.erase(sector:sector)
+        try reconnected.program(offset:0,data:Data([0x12,0x34]))
+        #expect(Data(wire.rom.prefix(2)) == Data([0x12,0x34]))
+    }
+    #expect(wire.commands.filter { $0.first == 0x15 }.count == 1)
+    #expect(!wire.commands.contains { $0.first == 0x13 })
+}
+
+@Test(arguments:[false,true]) func mdDumperProgrammingFailureClosesSessionAndPreventsFurtherCommands(timeout: Bool) throws {
+    let wire = DumperWire(); wire.rom = Data(repeating:0xFF,count:0x400000); wire.flashID = (0xBF,0xB7)
+    let device = try wire.device(), initial = try device.inspect(profile:.automatic)
+    let preparation = try device.prepareROMWriting(cartridge:initial,progress:{_ in})
+    let reconnected = try wire.device(), fresh = try reconnected.inspect(profile:.automatic)
+    try reconnected.acceptROMWritingPreparation(preparation,cartridge:fresh)
+    _ = try reconnected.inspect(profile:.automatic)
+    wire.closed = false; wire.programAcknowledgement = timeout ? nil : 0xAA
+    #expect(throws:(any Error).self) { try reconnected.program(offset:0,data:Data(repeating:0x42,count:128)) }
+    #expect(wire.closed && wire.commands.filter{$0.first == 0x14}.count == 1)
+    let count = wire.commands.count
+    #expect(throws:(any Error).self) { try reconnected.program(offset:0,data:Data([1,2])) }
+    #expect(throws:(any Error).self) { try reconnected.inspect(profile:.automatic) }
+    #expect(wire.commands.count == count)
+    #expect(!wire.commands.contains{[UInt8(0x13),0x15].contains($0[0])})
 }
 
 @Test func mdDumperContinueCanRetryBeforeRestartWithoutWritingOrRepeatingChipIdentification() async throws {
@@ -944,5 +1045,141 @@ func mdDumperPreparedROMCapacityDoesNotBlockSeparateSRAMQualification(chip: Int)
                           verify:true,destination:tempFolder())
     }
     #expect(wire.rom == originalROM && wire.save == originalSave)
+    #expect(!wire.commands.contains { [UInt8(0x13),0x14,0x15,0x65].contains($0[0]) })
+}
+
+@Test func mdDumperSpansionExtendedIDsEnableFourMiBWritingWithoutPretendingTheChipIsFourMiB() throws {
+    let wire = DumperWire()
+    wire.rom = fixtureROM(bytes:0x200000,save:false) + Data(repeating:0xA5,count:0x600000)
+    wire.flashID = (0x01,0x7E); wire.leaveIdentificationMode = true
+    wire.identificationWords = [0:0x0001,2:0x227E,0x1C:0x2210,0x1E:0x2200]
+    let original = wire.rom, originalSave = wire.save
+    let device = try wire.device(), initial = try device.inspect(profile:.linearROMOnly)
+    let preparation = try device.prepareROMWriting(cartridge:initial,progress:{_ in})
+    #expect(preparation.chip.capacity == 0x800000 && preparation.bytes == 0x400000)
+    #expect(wire.rom == original && wire.save == originalSave && wire.closed)
+    #expect(!wire.commands.contains { [UInt8(0x13),0x14,0x15,0x65].contains($0[0]) })
+    wire.identificationMode = false; wire.closed = false
+    let reconnected = try wire.device(), fresh = try reconnected.inspect(profile:.linearROMOnly)
+    try reconnected.acceptROMWritingPreparation(preparation,cartridge:fresh)
+    let writable = try reconnected.inspectConfigured(profile:.linearROMOnly,override:nil,mapper:.automatic)
+    #expect(writable.canWrite && writable.geometry?.capacity == 0x800000)
+    #expect(writable.romReadLimit == 0x400000 && writable.romWriteLimit == 0x400000)
+    let image = try ROMImage(data:fixtureROM(bytes:0x200000,save:false,title:"NEW GAME"))
+    let plan = try WritePlan(target:writable,image:image,romName:"game.bin",save:nil,saveName:nil,
+                             format:.packed,backupDestination:nil,clearUnusedROM:true)
+    #expect(plan.rom?.count == 0x400000)
+    let result = try testWrite(device:reconnected,plan:plan,progress:{_ in})
+    #expect(result.manifest.outcome == "completed")
+    #expect(result.manifest.physicalFlashBytes == 0x800000 && result.manifest.erasedFlashBytes == 0x800000)
+    #expect(result.manifest.programmedROMBytes == 0x400000 && result.manifest.unverifiedErasedFlashBytes == 0x400000)
+    #expect(Data(wire.rom.prefix(image.data.count)) == image.data)
+    #expect(wire.rom[image.data.count...].allSatisfy { $0 == 0xFF } && wire.save == originalSave)
+    #expect(wire.commands.first { $0[0] == 0x15 }?[1] == 3)
+    #expect(wire.commands.first { $0[0] == 0x65 }?[4] == 4)
+    #expect(throws:(any Error).self) { try reconnected.program(offset:0x400000,data:Data([0,0])) }
+    #expect(throws:(any Error).self) { try BackupRequest(cartridge:writable,romBytes:0x800000,saveLayout:nil,verify:true,destination:tempFolder()) }
+}
+
+@Test(arguments:[0xBF6B,0x20ED,0xC2CB,0xC2C9,0xC2FC])
+func mdDumperDocumentedEightMiBChipsCanUseABoundedLinearRange(id: Int) throws {
+    let wire = DumperWire(); wire.rom = fixtureROM(save:false) + Data(repeating:0xFF,count:0x400000-65536)
+    wire.flashID = (UInt8(id >> 8),UInt8(truncatingIfNeeded:id)); wire.leaveIdentificationMode = true
+    let configuration = try CartridgeConfiguration(romCapacity:65536,saveLayout:nil)
+    let device = try wire.device(), initial = try device.inspectConfigured(profile:.automatic,override:configuration,mapper:.automatic)
+    let preparation = try device.prepareROMWriting(cartridge:initial,progress:{_ in})
+    #expect(preparation.chip.capacity == 0x800000)
+    wire.identificationMode = false
+    let reconnected = try wire.device(), fresh = try reconnected.inspectConfigured(profile:.automatic,override:configuration,mapper:.automatic)
+    try reconnected.acceptROMWritingPreparation(preparation,cartridge:fresh)
+    let writable = try reconnected.inspectConfigured(profile:.automatic,override:configuration,mapper:.automatic)
+    #expect(writable.canWrite && writable.romWriteLimit == 65536 && writable.geometry?.capacity == 0x800000)
+    let image = try ROMImage(data:fixtureROM(save:false,title:"NEW GAME"))
+    let plan = try WritePlan(target:writable,image:image,romName:"game.bin",save:nil,saveName:nil,
+                             format:.packed,backupDestination:nil,clearUnusedROM:true)
+    #expect(try testWrite(device:reconnected,plan:plan,progress:{_ in}).manifest.outcome == "completed")
+    #expect(Data(wire.rom.prefix(65536)) == image.data)
+    #expect(throws:(any Error).self) { try reconnected.program(offset:65536,data:Data([0,0])) }
+}
+
+@Test(arguments:[UInt16(0x2200),0x2201,0x2221,0xFFFF])
+func mdDumperSharedSpansionIDRequiresAnUnambiguousSupportedModel(bootID: UInt16) throws {
+    let wire = DumperWire(); wire.rom = fixtureROM(save:false) + Data(repeating:0xFF,count:0x400000-65536)
+    wire.flashID = (0x01,0x7E); wire.leaveIdentificationMode = true
+    wire.identificationWords = [0:0x0001,2:0x227E,0x1C:0x2210,0x1E:bootID]
+    let device = try wire.device(), initial = try device.inspect(profile:.automatic)
+    if bootID == 0x2200 || bootID == 0x2201 {
+        #expect(try device.prepareROMWriting(cartridge:initial,progress:{_ in}).chip.capacity == 0x800000)
+    } else {
+        #expect(throws:(any Error).self) { try device.prepareROMWriting(cartridge:initial,progress:{_ in}) }
+    }
+    #expect(wire.closed && !wire.commands.contains { [UInt8(0x13),0x14,0x15,0x65].contains($0[0]) })
+}
+
+@Test func mdDumperWholeFlashErasePreservesSeparateConfirmedSRAM() throws {
+    let wire = DumperWire(); wire.flashID = (0x20,0xED); wire.leaveIdentificationMode = true
+    let saved = wire.save
+    let device = try wire.device(), initial = try device.inspect(profile:.automatic)
+    #expect(initial.saveStatus == .confirmed)
+    let preparation = try device.prepareROMWriting(cartridge:initial,progress:{_ in})
+    wire.identificationMode = false
+    let reconnected = try wire.device(), fresh = try reconnected.inspect(profile:.automatic)
+    try reconnected.acceptROMWritingPreparation(preparation,cartridge:fresh)
+    let writable = try reconnected.inspectConfigured(profile:.automatic,override:nil,mapper:.automatic)
+    #expect(writable.geometry?.capacity == 0x800000 && writable.romWriteLimit == 0x200000)
+    let image = try ROMImage(data:fixtureROM(title:"NEW GAME"))
+    let plan = try WritePlan(target:writable,image:image,romName:"game.bin",save:nil,saveName:nil,
+                             format:.packed,backupDestination:nil,clearUnusedROM:true)
+    let result = try testWrite(device:reconnected,plan:plan,progress:{_ in})
+    #expect(result.manifest.outcome == "completed" && result.manifest.preservedSaveSHA256 == hash(Data(saved.prefix(writable.saveLayout!.activeBytes))))
+    #expect(wire.save == saved)
+    #expect(!wire.commands.contains { $0[0] == 0x13 })
+}
+
+@Test func mdDumperReusedROMOnlyBoardCanIgnoreAnUnconfirmedOldSRAMDeclaration() throws {
+    let wire = DumperWire(); wire.flashID = (0x20,0xED); wire.leaveIdentificationMode = true
+    wire.save = Data(repeating:0xFF,count:32768)
+    let configuration = try CartridgeConfiguration(romCapacity:0x400000,saveLayout:nil)
+    let device = try wire.device(), scanned = try device.inspect(profile:.automatic)
+    #expect(scanned.saveStatus == .unconfirmed && scanned.romWriteLimit == 0x200000)
+    let originalROM = wire.rom
+    let preparation = try device.prepareROMWriting(cartridge:scanned.applying(configuration),progress:{_ in})
+    #expect(preparation.bytes == 0x400000)
+    wire.identificationMode = false
+    let reconnected = try wire.device(), fresh = try reconnected.inspectConfigured(profile:.automatic,override:configuration,mapper:.automatic)
+    try reconnected.acceptROMWritingPreparation(preparation,cartridge:fresh)
+    let writable = try reconnected.inspectConfigured(profile:.automatic,override:configuration,mapper:.automatic)
+    #expect(writable.canWrite && writable.hasExplicitROMOnlyConfiguration && writable.romWriteLimit == 0x400000)
+    let image = try ROMImage(data:fixtureROM(bytes:0x300000,save:false))
+    let plan = try WritePlan(target:writable,image:image,romName:"game.bin",save:nil,saveName:nil,
+                             format:.packed,backupDestination:nil,clearUnusedROM:true)
+    #expect(plan.rom?.count == 0x400000 && wire.rom == originalROM)
+    #expect(!wire.commands.contains { [UInt8(0x13),0x14,0x15,0x65].contains($0[0]) })
+}
+
+@Test func mdDumperRejectsOddManualCapacityBeforeIdentificationOrErasure() throws {
+    let wire = DumperWire(); wire.rom = fixtureROM(save:false) + Data(repeating:0xFF,count:0x400000-65536)
+    wire.flashID = (0xBF,0xB7)
+    let device = try wire.device(), scanned = try device.inspect(profile:.automatic)
+    let configured = scanned.applying(try .init(romCapacity:65537,saveLayout:nil))
+    #expect(throws:(any Error).self) { try device.prepareROMWriting(cartridge:configured,progress:{_ in}) }
+    #expect(!wire.commands.contains { [UInt8(0x18),0x14,0x15,0x65].contains($0[0]) })
+    let geometry = try #require(MDDumperFlash.lookup(manufacturer:0xBF,chip:0xB7)).geometry
+    #expect(throws:(any Error).self) { try geometry.programLength(512,accessibleCapacity:513) }
+}
+
+@Test func mdDumperCapacityCannotExpandAfterPreparationWithoutANewVerifiedBaseline() throws {
+    let wire = DumperWire(); wire.rom = fixtureROM(save:false) + Data(repeating:0xFF,count:0x400000-65536)
+    wire.flashID = (0x20,0xED)
+    let small = try CartridgeConfiguration(romCapacity:65536,saveLayout:nil)
+    let larger = try CartridgeConfiguration(romCapacity:131072,saveLayout:nil)
+    let device = try wire.device(), initial = try device.inspectConfigured(profile:.automatic,override:small,mapper:.automatic)
+    let preparation = try device.prepareROMWriting(cartridge:initial,progress:{_ in})
+    let reconnected = try wire.device(), changed = try reconnected.inspectConfigured(profile:.automatic,override:larger,mapper:.automatic)
+    #expect(throws:(any Error).self) { try reconnected.acceptROMWritingPreparation(preparation,cartridge:changed) }
+    let original = try reconnected.inspectConfigured(profile:.automatic,override:small,mapper:.automatic)
+    try reconnected.acceptROMWritingPreparation(preparation,cartridge:original)
+    _ = try reconnected.inspectConfigured(profile:.automatic,override:small,mapper:.automatic)
+    #expect(throws:(any Error).self) { try reconnected.inspectConfigured(profile:.automatic,override:larger,mapper:.automatic) }
     #expect(!wire.commands.contains { [UInt8(0x13),0x14,0x15,0x65].contains($0[0]) })
 }

@@ -8,12 +8,12 @@
 
 /* Begin PBXBuildFile section */
 		683EB090917184901B6DEFEB /* WorkspaceModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 050FE0B81A8736EEA7356E63 /* WorkspaceModel.swift */; };
+		71FEA56030404F86B62E1910 /* AppIcon.icon in Resources */ = {isa = PBXBuildFile; fileRef = 4478A676BADE491D99B883A0 /* AppIcon.icon */; };
 		92C8B130E501DF06E7444BFD /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AFCE9792F77B1BDE7DA15722 /* SettingsView.swift */; };
 		A34E33335FBB4AFF868B5A89 /* FlashMDApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = BC042DFE1F5551BBF23B7778 /* FlashMDApp.swift */; };
 		C29BB9E307A2246E94B71BFD /* CartridgeWorkspaceView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 353FDD5560F82C12F011CBFE /* CartridgeWorkspaceView.swift */; };
 		E3A72B6C6399E025DD10DC65 /* ActivityView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 92D27EBB774A04FA76FE00B5 /* ActivityView.swift */; };
 		E474FB918E8B2A830630510D /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = CA1299C5FC136F31A2A0BB33 /* Assets.xcassets */; };
-		71FEA56030404F86B62E1910 /* AppIcon.icon in Resources */ = {isa = PBXBuildFile; fileRef = 4478A676BADE491D99B883A0 /* AppIcon.icon */; };
 		E5F85CD15697F4F1DF2F368C /* FlashMDCore in Frameworks */ = {isa = PBXBuildFile; productRef = 63A13EAA452F82BD2F391D13 /* FlashMDCore */; };
 		F6C19A87A1EE7F664FD6E9E3 /* WorkspaceView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7B516ED0B04F417AE3B225A /* WorkspaceView.swift */; };
 /* End PBXBuildFile section */
@@ -22,12 +22,12 @@
 		050FE0B81A8736EEA7356E63 /* WorkspaceModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceModel.swift; sourceTree = "<group>"; };
 		10FC48DBE81A8AD03B7FC9AA /* FlashMDCore */ = {isa = PBXFileReference; lastKnownFileType = folder; name = FlashMDCore; path = Packages/FlashMDCore; sourceTree = SOURCE_ROOT; };
 		353FDD5560F82C12F011CBFE /* CartridgeWorkspaceView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CartridgeWorkspaceView.swift; sourceTree = "<group>"; };
+		4478A676BADE491D99B883A0 /* AppIcon.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.icon; path = AppIcon.icon; sourceTree = "<group>"; };
 		92D27EBB774A04FA76FE00B5 /* ActivityView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ActivityView.swift; sourceTree = "<group>"; };
 		9DF8DB85BD396D0441F4E8DE /* FlashMD.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = FlashMD.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		AFCE9792F77B1BDE7DA15722 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		BC042DFE1F5551BBF23B7778 /* FlashMDApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FlashMDApp.swift; sourceTree = "<group>"; };
 		CA1299C5FC136F31A2A0BB33 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
-		4478A676BADE491D99B883A0 /* AppIcon.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.icon; path = AppIcon.icon; sourceTree = "<group>"; };
 		E7B516ED0B04F417AE3B225A /* WorkspaceView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -239,7 +239,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 0.5.0;
+				MARKETING_VERSION = 0.5.1;
 				PRODUCT_BUNDLE_IDENTIFIER = dev.mintho.FlashMD;
 				PRODUCT_NAME = FlashMD;
 				SDKROOT = macosx;
@@ -392,7 +392,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 0.5.0;
+				MARKETING_VERSION = 0.5.1;
 				PRODUCT_BUNDLE_IDENTIFIER = dev.mintho.FlashMD;
 				PRODUCT_NAME = FlashMD;
 				SDKROOT = macosx;

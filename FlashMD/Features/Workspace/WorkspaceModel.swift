@@ -275,6 +275,9 @@ enum ROMWritingPreparationStage { case preparing, restart, reconnecting }
     var activity: [HistoryRecord] = []
     var reviewPlan: WritePlan?
     var showReview = false
+    var showSRAMQuestion = false
+    private var pendingSRAMQuestion: CartridgeSnapshot?
+    private var romOnlyChoiceToReset: (manual: Bool, capacity: Int, save: Bool)?
     var showClearHistory = false
     var progress: OperationProgress?
     var operationTitle = ""
@@ -327,6 +330,7 @@ enum ROMWritingPreparationStage { case preparing, restart, reconnecting }
     // All scan entry points share this flow, including reconnect and the menu shortcut.
     func refresh() async {
         guard !isBusy else { return }
+        resetROMOnlyChoice()
         isInspecting = true; errorMessage = nil; clearOperationPresentation(); cartridge = nil; contentAnalysis = nil; invalidateReview()
         clearTitleOverride()
         defer { isInspecting = false }
@@ -383,6 +387,7 @@ enum ROMWritingPreparationStage { case preparing, restart, reconnecting }
         errorMessage = lastError?.localizedDescription ?? "The programmer could not be connected. Try another USB port."
     }
     func configurationChanged() {
+        romOnlyChoiceToReset = nil
         invalidateReview()
         contentAnalysis = nil
         configurationPending = cartridge != nil
@@ -399,6 +404,7 @@ enum ROMWritingPreparationStage { case preparing, restart, reconnecting }
     }
     func updateConnectionMode() async {
         guard !operationRunning else { return }
+        resetROMOnlyChoice()
         try? await controller.disconnect(); connected = false; cartridge = nil; contentAnalysis = nil
         clearTitleOverride()
         if demoMode { await refresh() } else { await scanPorts() }
@@ -452,9 +458,16 @@ enum ROMWritingPreparationStage { case preparing, restart, reconnecting }
             if writeSRAM, selectedSRAM == nil { throw FlashMDError.invalid("Choose a separate save file to restore.") }
             let image = writeROM ? selectedROM?.image : nil
             let save = writeSRAM ? selectedSRAM?.data : nil
+            if image != nil, !writeSRAM, cartridge.canConfirmNoSRAMForROMWriting {
+                invalidateReview(); errorMessage = nil
+                pendingSRAMQuestion = cartridge; showSRAMQuestion = true
+                return
+            }
+            // Resolve stale SRAM declarations before asking for a reader restart.
+            if image != nil { try cartridge.validateROMWriteSaveProtection() }
             if let image, canPrepareMDDumperROMWriting {
                 guard ROMMapper.detect(image.metadata) == .linear else { throw FlashMDError.invalid("This game needs bank switching. Writing it to a linear cartridge is not supported.") }
-                let readRange = min(cartridge.flashCapacity?.bytes ?? 0x400000,cartridge.saveLayout?.base ?? 0x400000,cartridge.metadata?.saveLayout?.base ?? 0x400000)
+                let readRange = cartridge.romWriteAddressLimit
                 guard image.data.count <= readRange else { throw FlashMDError.invalid("The ROM file exceeds the cartridge's accessible range.") }
                 guard (image.metadata.declaredROMBytes ?? 0) <= image.data.count else { throw FlashMDError.invalid("The ROM file is shorter than its header declares. Check that the backup is complete.") }
                 guard image.metadata.saveWarning == nil, cartridge.metadata?.saveWarning == nil else { throw FlashMDError.invalid("This game or cartridge uses an unsupported save type.") }
@@ -480,6 +493,47 @@ enum ROMWritingPreparationStage { case preparing, restart, reconnecting }
             showReview = true
         } catch { errorMessage = error.localizedDescription }
     }
+    func cancelSRAMQuestion() {
+        showSRAMQuestion = false; pendingSRAMQuestion = nil
+    }
+    private func resetROMOnlyChoice() {
+        guard let previous = romOnlyChoiceToReset else { return }
+        romOnlyChoiceToReset = nil
+        manualConfiguration = previous.manual; capacityChoice = previous.capacity; manualSave = previous.save
+    }
+    func confirmCartridgeHasNoSRAM() {
+        guard !isBusy, !configurationPending, connected, writeROM, !writeSRAM,
+              let expected = pendingSRAMQuestion, cartridge == expected,
+              expected.canConfirmNoSRAMForROMWriting else { cancelSRAMQuestion(); return }
+        cancelSRAMQuestion(); errorMessage = nil
+        let previous = (manual:manualConfiguration,capacity:capacityChoice,save:manualSave)
+        operationRunning = true; operationTitle = "Check cartridge"
+        operationCartridge = expected; operationStart = Date(); operationEnd = nil
+        progress = .init(.inspecting,detail:"Checking cartridge configuration")
+        operationTask = Task {
+            var ready = false
+            do {
+                let configured = try await controller.confirmROMOnlyCartridge(expected,mdDumperStreaming:mdDumperStreaming)
+                try Task.checkCancellation()
+                guard let configuration = configured.configurationOverride else { throw FlashMDError.invalid("Scan again before writing.") }
+                capacityChoice = configuration.romCapacity
+                manualSave = false; manualConfiguration = true
+                // This answer describes the current cartridge, not the next one.
+                romOnlyChoiceToReset = previous
+                cartridge = configured; configurationPending = false
+                contentAnalysis = nil; backupSRAM = false
+                record(.init(title:"ROM-only cartridge confirmed",detail:"User confirmed no SRAM; cartridge checked again. No ROM or SRAM written."))
+                ready = true
+            } catch {
+                try? await controller.disconnect()
+                connected = false; cartridge = nil; contentAnalysis = nil
+                errorMessage = error is CancellationError ? "Cartridge check cancelled. Nothing was written." : error.localizedDescription
+            }
+            // Finish this task before prepareWrite() starts another preparation task.
+            operationRunning = false; operationTask = nil; clearOperationPresentation()
+            if ready { prepareWrite() }
+        }
+    }
     var writeActionTitle: String {
         guard let plan = reviewPlan else { return "Write" }
         if plan.rom != nil && plan.save != nil { return "Write Both" }
@@ -496,8 +550,14 @@ enum ROMWritingPreparationStage { case preparing, restart, reconnecting }
         if plan.rom != nil && plan.save != nil { change = "The existing game and saves will be overwritten." }
         else if plan.rom != nil { change = "The existing game will be overwritten." + (plan.target.saveLayout != nil ? " SRAM saves will be preserved." : "") }
         else { change = "Existing cartridge saves will be overwritten." }
+        let erase = plan.rom != nil && plan.target.geometry?.mdDumperAlgorithm != nil
+            ? "\n\nThe entire ROM chip will be erased. FlashMD will write and verify \(formatBytes(plan.requiredBytes)) of accessible ROM."
+            : ""
+        let configuration = plan.rom != nil && plan.target.hasExplicitROMOnlyConfiguration && plan.target.metadata?.saveLayout != nil
+            ? "\n\nConfigured as a cartridge without SRAM."
+            : ""
         let check = plan.target.canCheckSaveWriting ? "\n\nFlashMD will first check SRAM write access and restore the test bytes." : ""
-        return "\(displayTitle(for:plan.target))\n\n\(change)\(check)\n\nThis cannot be undone without a backup."
+        return "\(displayTitle(for:plan.target))\n\n\(change)\(erase)\(configuration)\(check)\n\nThis cannot be undone without a backup."
     }
     func confirmWrite() {
         guard !isBusy, !demoMode, let plan = reviewPlan else { return }
@@ -571,7 +631,7 @@ enum ROMWritingPreparationStage { case preparing, restart, reconnecting }
     }
     func cancel() { operationTask?.cancel(); progress = .init(progress?.phase ?? .cancelled,detail:"Stopping at the next safe boundary…",cancellable:false) }
     func handleSleep() { if operationRunning { cancel() } }
-    func invalidateReview() { reviewPlan = nil; showReview = false }
+    func invalidateReview() { reviewPlan = nil; showReview = false; cancelSRAMQuestion() }
     func record(_ record: HistoryRecord) {
         activity.removeAll { $0.id == record.id }
         activity.insert(record,at:0)

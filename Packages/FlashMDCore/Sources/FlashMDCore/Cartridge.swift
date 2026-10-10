@@ -34,7 +34,8 @@ public struct CartridgeConfiguration: Codable, Sendable, Equatable {
     public let saveLayout: SRAMLayout?
     /// Conservative programming capacity; automatic reads use the separate scan range.
     public static func inferredCapacity(geometry: FlashGeometry, saveLayout: SRAMLayout?) -> MemoryMeasurement {
-        .init(bytes:min(geometry.capacity,0x400000,saveLayout?.base ?? 0x400000),source:.estimated)
+        let bytes = min(geometry.capacity,0x400000,saveLayout?.base ?? 0x400000)
+        return .init(bytes:bytes,source:bytes == geometry.capacity ? .hardware : .estimated)
     }
     public init(romCapacity: Int, saveLayout: SRAMLayout?) throws {
         guard (512...0x400000).contains(romCapacity) else {
@@ -71,6 +72,8 @@ public struct CartridgeSnapshot: Sendable, Equatable {
     public let readerKind: ProgrammerKind
     public let saveWriteSupported: Bool
     public let saveStatus: SaveMemoryStatus
+    /// Scan evidence survives a manual configuration that hides save controls.
+    public let detectedSaveStatus: SaveMemoryStatus
     public var canBackupSave: Bool {
         if serialSave != nil { return serialSave == .pierSolar && saveLayout == nil && mapper == .pierSolar && romAccess == .banked && saveStatus == .readOnly && !isDemo }
         return saveLayout != nil && (saveStatus == .confirmed || saveStatus == .readOnly || saveStatus == .manual)
@@ -80,7 +83,17 @@ public struct CartridgeSnapshot: Sendable, Equatable {
     public var romReadLimit: Int { mappedROMBytes ?? linearROMReadBytes ?? flashCapacity?.bytes ?? 0x400000 }
     /// Programming capacity is independent of the wider read-only scan range.
     /// WritePlan also rejects erase/program ranges that overlap configured SRAM.
-    public var romWriteLimit: Int { min(romReadLimit,flashCapacity?.bytes ?? 0,metadata?.saveLayout?.base ?? 0x400000) }
+    public var hasExplicitROMOnlyConfiguration: Bool {
+        (configurationOverride.map { $0.saveLayout == nil } ?? (profile == .linearROMOnly)) &&
+        detectedSaveStatus != .confirmed && detectedSaveStatus != .readOnly && metadata?.saveWarning == nil
+    }
+    /// A ROM-only override explicitly describes the board, rather than the
+    /// previous game's header. Ordinary automatic scans retain the save boundary.
+    public var romWriteAddressLimit: Int {
+        min(romReadLimit,flashCapacity?.bytes ?? 0x400000,saveLayout?.base ?? 0x400000,
+            hasExplicitROMOnlyConfiguration ? 0x400000 : metadata?.saveLayout?.base ?? 0x400000)
+    }
+    public var romWriteLimit: Int { flashCapacity == nil ? 0 : romWriteAddressLimit }
     public var canRestoreSave: Bool { serialSave == nil && mapper == .linear && romAccess == .linear && !isDemo && saveStatus == .confirmed && saveLayout != nil && saveLayout?.lane != 0 && saveWriteSupported }
     /// Permanently mapped SRAM needs an active check inside the approved write
     /// flow. This never authorizes direct backend writes or scan-time probing.
@@ -95,6 +108,35 @@ public struct CartridgeSnapshot: Sendable, Equatable {
     }
     public var canStartSaveWrite: Bool { canRestoreSave || canCheckSaveWriting }
 
+    public var canConfirmNoSRAMForROMWriting: Bool {
+        !isDemo && serialSave == nil && mapper == .linear && romAccess == .linear &&
+        metadata?.saveLayout != nil && metadata?.saveWarning == nil && saveLayout != nil &&
+        [.declared, .unconfirmed, .manual].contains(saveStatus) &&
+        detectedSaveStatus != .confirmed && detectedSaveStatus != .readOnly
+    }
+
+    public func romOnlyConfigurationForWriting() throws -> CartridgeConfiguration {
+        guard canConfirmNoSRAMForROMWriting else {
+            throw FlashMDError.invalid("The SRAM configuration changed. Scan again before writing.")
+        }
+        return try .init(romCapacity:min(romReadLimit,geometry?.capacity ?? 0x400000,0x400000),saveLayout:nil)
+    }
+
+    /// Run before chip identification as well as when constructing the write plan.
+    /// An old game's SRAM declaration must not silently disable save protection.
+    public func validateROMWriteSaveProtection() throws {
+        if metadata?.saveWarning != nil {
+            throw FlashMDError.invalid("This cartridge declares an unsupported save type. ROM writing could erase its saves.")
+        }
+        if saveLayout == nil, metadata?.saveLayout != nil,
+           detectedSaveStatus == .confirmed || detectedSaveStatus == .readOnly {
+            throw FlashMDError.invalid("Save memory was detected. Keep SRAM enabled to preserve the cartridge’s saves.")
+        }
+        if saveLayout != nil, saveStatus != .confirmed, !canCheckSaveWriting {
+            throw FlashMDError.invalid("The current game declares SRAM, but it could not be confirmed. If this cartridge has no SRAM, choose “4 MiB ROM only” in Advanced Settings, then scan again.")
+        }
+    }
+
     public func applying(_ override: CartridgeConfiguration?) -> CartridgeSnapshot {
         guard let override, mapper == .linear, romAccess == .linear else { return self }
         let layout = readerKind == .mdDumper && override.saveLayout?.lane != 1 ? nil : override.saveLayout
@@ -108,7 +150,7 @@ public struct CartridgeSnapshot: Sendable, Equatable {
         return .init(title:title,regions:regions,romSize:romSize,flashCapacity:capacity,
             rawSaveWindow:layout.map { .init(bytes:$0.windowBytes,source:.profile) },isDemo:isDemo,
             metadata:metadata,geometry:geometry,saveLayout:layout,serialSave:serialSave,identity:identity,fingerprint:fingerprint,
-            warning:configurationWarning,profile:profile,rawHeader:rawHeader,configurationOverride:override,mapper:mapper,mapperSelection:mapperSelection,romAccess:romAccess,mappedROMBytes:mappedROMBytes,mapperMessage:mapperMessage,readerKind:readerKind,saveWriteSupported:saveWriteSupported,linearROMReadBytes:capacity.bytes,saveStatus:configuredSaveStatus)
+            warning:configurationWarning,profile:profile,rawHeader:rawHeader,configurationOverride:override,mapper:mapper,mapperSelection:mapperSelection,romAccess:romAccess,mappedROMBytes:mappedROMBytes,mapperMessage:mapperMessage,readerKind:readerKind,saveWriteSupported:saveWriteSupported,linearROMReadBytes:capacity.bytes,saveStatus:configuredSaveStatus,detectedSaveStatus:detectedSaveStatus)
     }
     func withSaveStatus(_ status: SaveMemoryStatus) -> CartridgeSnapshot {
         .init(title:title,regions:regions,romSize:romSize,flashCapacity:flashCapacity,rawSaveWindow:rawSaveWindow,
@@ -117,7 +159,7 @@ public struct CartridgeSnapshot: Sendable, Equatable {
             mapper:mapper,mapperSelection:mapperSelection,romAccess:romAccess,mappedROMBytes:mappedROMBytes,
             mapperMessage:mapperMessage,readerKind:readerKind,
             saveWriteSupported:readerKind == .mdDumper ? status == .confirmed && saveLayout?.activeBytes.isMultiple(of:32) == true : saveWriteSupported,
-            linearROMReadBytes:linearROMReadBytes,saveStatus:status)
+            linearROMReadBytes:linearROMReadBytes,saveStatus:status,detectedSaveStatus:status == .confirmed || status == .readOnly ? status : detectedSaveStatus)
     }
 
     public init(
@@ -145,10 +187,12 @@ public struct CartridgeSnapshot: Sendable, Equatable {
         readerKind: ProgrammerKind = .flashKit,
         saveWriteSupported: Bool = true,
         linearROMReadBytes: Int? = nil,
-        saveStatus: SaveMemoryStatus? = nil
+        saveStatus: SaveMemoryStatus? = nil,
+        detectedSaveStatus: SaveMemoryStatus? = nil
     ) {
         self.readerKind = readerKind; self.saveWriteSupported = saveWriteSupported
         self.saveStatus = saveStatus ?? (metadata?.saveWarning != nil ? .unsupported : saveLayout != nil || metadata?.saveLayout != nil ? .declared : .none)
+        self.detectedSaveStatus = detectedSaveStatus ?? self.saveStatus
         self.mapper = mapper; self.mapperSelection = mapperSelection; self.romAccess = romAccess
         self.mappedROMBytes = mappedROMBytes; self.mapperMessage = mapperMessage
         self.linearROMReadBytes = linearROMReadBytes

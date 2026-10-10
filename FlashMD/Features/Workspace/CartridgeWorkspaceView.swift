@@ -171,7 +171,7 @@ struct CartridgeWorkspaceView: View {
                 metric("HEADER ROM SIZE",cartridge.romSize.map { formatBytes($0.bytes) } ?? "No valid header",note:"Declared by the game; may be incomplete")
                     .help("Declared by the game. Backups use the scan's suggested size unless you choose complete ROM.")
                 Rectangle().fill(Color.primary.opacity(0.1)).frame(width:1,height:42)
-                metric("SAVE MEMORY",cartridge.serialSave?.displayName ?? (cartridge.saveLayout ?? cartridge.metadata?.saveLayout).map { formatBytes($0.activeBytes) + " SRAM" } ?? (cartridge.saveStatus == .unsupported ? "Unsupported save type" : "None declared"),note:cartridge.serialSave != nil ? (cartridge.canBackupSave ? "64 KiB address range · backup only" : "Save backup unavailable on this reader") : cartridge.canCheckSaveWriting ? "Write access checked before writing" : cartridge.saveStatus.explanation)
+                metric("SAVE MEMORY",cartridge.hasExplicitROMOnlyConfiguration ? "No SRAM" : cartridge.serialSave?.displayName ?? (cartridge.saveLayout ?? cartridge.metadata?.saveLayout).map { formatBytes($0.activeBytes) + " SRAM" } ?? (cartridge.saveStatus == .unsupported ? "Unsupported save type" : "None declared"),note:cartridge.hasExplicitROMOnlyConfiguration ? "Manual configuration" : cartridge.serialSave != nil ? (cartridge.canBackupSave ? "64 KiB address range · backup only" : "Save backup unavailable on this reader") : cartridge.canCheckSaveWriting ? "Write access checked before writing" : cartridge.saveStatus.explanation)
             }.padding(.vertical,compact ? 12 : 18).background(Color.primary.opacity(scheme == .dark ? 0.035 : 0.025),in:RoundedRectangle(cornerRadius:18))
         }.padding(.top,4)
     }
@@ -276,7 +276,7 @@ struct CartridgeWorkspaceView: View {
                 writeFileCard(model.savePanelTitle,file:model.selectedSRAM,selected:$model.writeSRAM,enabled:model.cartridge?.canStartSaveWrite == true,forROM:false)
             }
             if model.writeROM, let image = model.selectedROM?.image {
-                if let geometry = model.cartridge?.geometry, let bytes = try? geometry.programLength(model.clearUnusedROM ? (model.cartridge?.romWriteLimit ?? image.data.count) : image.data.count) {
+                if let geometry = model.cartridge?.geometry, let bytes = try? geometry.programLength(model.clearUnusedROM ? (model.cartridge?.romWriteLimit ?? image.data.count) : image.data.count,accessibleCapacity:model.cartridge?.romWriteLimit) {
                     let capacity = model.cartridge?.flashCapacity?.bytes ?? 0
                     Text("\(formatBytes(image.data.count)) ROM · \(formatBytes(capacity)) available")
                         .font(.caption).foregroundStyle(bytes <= capacity ? Color.secondary : Color.red)
@@ -415,7 +415,7 @@ struct CartridgeWorkspaceView: View {
                         ForEach([0x10000,0x20000,0x40000,0x80000,0x100000,0x200000,0x300000,0x400000],id:\.self) { Text(formatBytes($0)).tag($0) }
                         if ![0x10000,0x20000,0x40000,0x80000,0x100000,0x200000,0x300000,0x400000].contains(model.capacityChoice) { Text(formatBytes(model.capacityChoice)).tag(model.capacityChoice) }
                     }
-                    advancedSetting(model.manualSave ? "Uses the SRAM addresses and byte lane below." : "No SRAM will be read or written.") {
+                    advancedSetting(model.manualSave ? "Uses the SRAM addresses and byte lane below." : "For boards without SRAM. Can override an unconfirmed SRAM declaration in the old game header.") {
                         Toggle("Cartridge has SRAM",isOn:$model.manualSave)
                     }
                     if model.manualSave {

@@ -114,3 +114,134 @@ import Testing
     #expect(!overridden.canWrite)
     #expect(throws:(any Error).self) { try BackupRequest(cartridge:overridden,romBytes:0x100001,saveLayout:nil,verify:true,destination:URL(fileURLWithPath:"/tmp")) }
 }
+
+@Test func romOnlyOverrideCanReplaceAStaleHeaderWithoutDisablingDetectedSaveProtection() throws {
+    let geometry = try fixtureGeometry(), metadata = try ROMMetadata.parse(fixtureROM())
+    let scanned = CartridgeSnapshot(title:metadata.title,regions:[],romSize:nil,
+        flashCapacity:.init(bytes:0x200000,source:.estimated),rawSaveWindow:nil,
+        metadata:metadata,geometry:geometry,saveLayout:metadata.saveLayout,saveStatus:.unconfirmed)
+    let override = try CartridgeConfiguration(romCapacity:0x400000,saveLayout:nil)
+    let romOnly = scanned.applying(override)
+    #expect(romOnly.hasExplicitROMOnlyConfiguration && romOnly.romWriteLimit == 0x400000)
+    let image = try ROMImage(data:fixtureROM(bytes:0x300000,save:false))
+    #expect(try WritePlan(target:romOnly,image:image,romName:"game.bin",save:nil,saveName:nil,
+                          format:.packed,backupDestination:nil).rom != nil)
+    let confirmed = scanned.withSaveStatus(.confirmed).applying(override)
+    #expect(!confirmed.hasExplicitROMOnlyConfiguration && confirmed.romWriteLimit == 0x200000)
+    #expect(confirmed.detectedSaveStatus == .confirmed)
+    #expect(throws:(any Error).self) { try WritePlan(target:confirmed,image:image,romName:"game.bin",save:nil,saveName:nil,format:.packed,backupDestination:nil) }
+}
+
+@Test func sramProtectionIsCheckedBeforeFlashIdentificationWithoutRequiringASaveFile() throws {
+    let metadata = try ROMMetadata.parse(fixtureROM())
+    // No flash geometry yet: MD Dumper has not entered chip-identification mode.
+    let target = CartridgeSnapshot(title:metadata.title,regions:[],romSize:nil,
+        flashCapacity:nil,rawSaveWindow:nil,metadata:metadata,saveLayout:metadata.saveLayout,
+        readerKind:.mdDumper,saveStatus:.unconfirmed)
+    #expect(!target.canWrite)
+    do {
+        try target.validateROMWriteSaveProtection()
+        Issue.record("An unconfirmed save declaration should require a board configuration.")
+    } catch {
+        #expect(error.localizedDescription.contains("current game declares SRAM"))
+        #expect(error.localizedDescription.contains("4 MiB ROM only"))
+    }
+    let romOnly = target.applying(try .init(romCapacity:0x400000,saveLayout:nil))
+    try romOnly.validateROMWriteSaveProtection()
+    try target.withSaveStatus(.confirmed).validateROMWriteSaveProtection()
+    let hiddenConfirmedSave = target.withSaveStatus(.confirmed).applying(try .init(romCapacity:0x400000,saveLayout:nil))
+    #expect(throws:(any Error).self) { try hiddenConfirmedSave.validateROMWriteSaveProtection() }
+}
+
+@Test(arguments:[SaveMemoryStatus.declared, .unconfirmed, .manual])
+func romOnlyConfirmationUsesTheScanRangeWithoutTheOldHeaderSaveBoundary(status: SaveMemoryStatus) throws {
+    let device = MemoryDevice(); device.saveStatus = status
+    let target = try device.inspect(profile:.automatic)
+    #expect(target.canConfirmNoSRAMForROMWriting)
+    let configuration = try target.romOnlyConfigurationForWriting()
+    #expect(configuration.romCapacity == 0x400000 && configuration.saveLayout == nil)
+    let configured = target.applying(configuration)
+    try configured.validateROMWriteSaveProtection()
+    #expect(configured.romWriteLimit == 0x400000 && !configured.canConfirmNoSRAMForROMWriting)
+    let smaller = target.applying(try .init(romCapacity:0x100000,saveLayout:target.saveLayout))
+    #expect(try smaller.romOnlyConfigurationForWriting().romCapacity == 0x100000)
+}
+
+@Test(arguments:[SaveMemoryStatus.none, .confirmed, .readOnly, .unsupported])
+func romOnlyQuestionNeverOverridesDetectedOrUnsupportedSaveMemory(status: SaveMemoryStatus) throws {
+    let device = MemoryDevice(); device.saveStatus = status
+    let target = try device.inspect(profile:.automatic)
+    #expect(!target.canConfirmNoSRAMForROMWriting)
+    #expect(throws:(any Error).self) { try target.romOnlyConfigurationForWriting() }
+}
+
+@Test(arguments:["unchanged", "confirmed", "readOnly", "cartridge changed"])
+func romOnlyConfirmationRechecksCartridgeAndSaveEvidenceBeforeAcceptingUserChoice(change: String) async throws {
+    let device = MemoryDevice(); device.saveStatus = .unconfirmed
+    let controller = ProgrammerController(makeDevice:{ _,_ in device })
+    try await controller.connect(path:"test")
+    let original = try await controller.inspect(profile:.automatic)
+    if change == "confirmed" { device.saveStatus = .confirmed }
+    if change == "readOnly" { device.saveStatus = .readOnly }
+    if change == "cartridge changed" { device.changedIdentity = true }
+    if change == "unchanged" {
+        let configured = try await controller.confirmROMOnlyCartridge(original)
+        #expect(configured.hasExplicitROMOnlyConfiguration && configured.saveLayout == nil)
+        #expect(configured.romWriteLimit == 0x400000)
+    } else {
+        await #expect(throws:(any Error).self) { try await controller.confirmROMOnlyCartridge(original) }
+    }
+    #expect(device.erasures == 0 && device.programs == 0 && device.restores == 0 && device.writeChecks == 0)
+}
+
+@Test(arguments:[0x22A7,0x22A8,0x22CB,0x22C9])
+func macronixCFIUsesPhysicalCapacityAndBootOrderWithStandardProgramming(id: Int) throws {
+    let eight = id == 0x22CB || id == 0x22C9
+    let geometry = try FlashGeometry(cfi:fixtureCFI(eightMB:eight),manufacturer:0xC2,deviceID:UInt16(id))
+    #expect(geometry.supported && !geometry.usesUnlockBypass)
+    #expect(geometry.capacity == (eight ? 0x800000 : 0x400000))
+    #expect(geometry.sectors.first?.bytes == ([0x22A7,0x22C9].contains(id) ? 65536 : 8192))
+    #expect(CartridgeConfiguration.inferredCapacity(geometry:geometry,saveLayout:nil).bytes == 0x400000)
+    var invalid = fixtureCFI(eightMB:eight); invalid[0x13] = 1
+    #expect(!(try FlashGeometry(cfi:invalid,manufacturer:0xC2,deviceID:UInt16(id))).supported)
+}
+
+@Test func standardCFIFlashKitProgrammingUsesWordUnlocksWithoutUnlockBypass() throws {
+    let header = Data(fixtureROM(save:false).prefix(512)), cfi = fixtureCFI(eightMB:true)
+    var bus = Data(repeating:0,count:256)
+    for index in cfi.indices { bus[index*2+1] = cfi[index] }
+    let transport = ScriptTransport([Data([1,1]),header,bus,Data([0,0xC2]),Data([0x22,0xCB]),Data([0,0]),Data([0,0]),header,Data([0x12,0x34])])
+    let device = try FlashKitDevice(transport:transport,path:"test")
+    let snapshot = try device.inspectConfigured(profile:.linearROMOnly,override:nil,mapper:.automatic)
+    #expect(snapshot.canWrite && snapshot.geometry?.capacity == 0x800000 && snapshot.romWriteLimit == 0x400000)
+    let before = transport.writes.count
+    try device.program(offset:0x300000,data:Data([0x12,0x34,0xFF,0xFF]))
+    let writes = Array(transport.writes.dropFirst(before))
+    let expected: [UInt8] = [0,0,0,5,0,0x55,0x43,0,0xAA,
+                            0,0,0,2,0,0xAA,0x43,0,0x55,
+                            0,0,0,5,0,0x55,0x43,0,0xA0,
+                            0,0x18,0,0,0,0,0x43,0x12,0x34,4]
+    #expect(writes == [Data(expected),Data([0x42])])
+    #expect(throws:(any Error).self) { try device.program(offset:0x400000,data:Data([0,0])) }
+}
+
+@Test func uniformSTCFIIsAvailableWithoutInventingBootSectors() throws {
+    var cfi = fixtureCFI(eightMB:true)
+    cfi[0x2C] = 1; cfi[0x2D] = 127; cfi[0x2F] = 0; cfi[0x30] = 1
+    let geometry = try FlashGeometry(cfi:cfi,manufacturer:0x20,deviceID:0x22ED)
+    #expect(geometry.supported && geometry.capacity == 0x800000 && !geometry.usesUnlockBypass)
+    #expect(geometry.sectors.count == 128)
+}
+
+@Test func flashKitROMOnlyProfileDoesNotKeepThePreviousGamesSRAMWriteBoundary() throws {
+    let header = Data(fixtureROM().prefix(512)), cfi = fixtureCFI(eightMB:true)
+    var bus = Data(repeating:0,count:256)
+    for index in cfi.indices { bus[index*2+1] = cfi[index] }
+    let transport = ScriptTransport([Data([1,1]),header,bus,Data([0,1]),Data([0x22,0x7E]),Data([0x22,0x10]),Data([0x22,0]),header,Data([0x12,0x34])])
+    let device = try FlashKitDevice(transport:transport,path:"test")
+    let snapshot = try device.inspectConfigured(profile:.linearROMOnly,override:nil,mapper:.automatic)
+    #expect(snapshot.metadata?.saveLayout != nil && snapshot.hasExplicitROMOnlyConfiguration)
+    #expect(snapshot.saveLayout == nil && snapshot.romWriteLimit == 0x400000)
+    try device.program(offset:0x300000,data:Data([0x12,0x34]))
+    #expect(throws:(any Error).self) { try device.program(offset:0x400000,data:Data([0,0])) }
+}
