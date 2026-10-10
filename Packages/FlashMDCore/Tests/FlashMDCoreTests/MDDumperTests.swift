@@ -8,6 +8,7 @@ private final class DumperWire: ByteTransport, @unchecked Sendable {
     var commands: [Data] = []
     var pending: Data?
     var closed = false
+    var poweredOff = false
     var ready = Data(repeating:0,count:64)
     var flashID: (UInt8,UInt8) = (0,0)
     var identificationMode = false
@@ -858,4 +859,90 @@ func mdDumperSSF2SaveControlIsRestrictedToQualifiedFirmware(version: (Int,Int,In
     let writable = try reconnected.inspect(profile:.automatic)
     #expect(writable.title == "Blank cartridge" && writable.canWrite && writable.canBackupROM)
     #expect(writable.romReadLimit == 0x100000)
+}
+
+@Test func mdDumperContinueCanRetryBeforeRestartWithoutWritingOrRepeatingChipIdentification() async throws {
+    let wire = DumperWire()
+    wire.rom = fixtureROM(save:false) + Data(repeating:0xFF,count:0x400000-65536)
+    wire.flashID = (0xBF,0xB7); wire.leaveIdentificationMode = true
+    let original = wire.rom, save = wire.save
+    let controller = ProgrammerController(makeDevice:{ path,streaming in
+        guard !wire.poweredOff else { throw FlashMDError.invalid("Reader is off") }
+        wire.closed = false
+        return try MDDumperDevice(transport:wire,location:path,streaming:streaming)
+    })
+    try await controller.connect(path:"md-dumper:123")
+    let snapshot = try await controller.inspect(profile:.automatic)
+    try await controller.prepareMDDumperROMWriting(snapshot,progress:{_ in})
+    // Clicking Continue too early must retain the original preparation.
+    await #expect(throws:(any Error).self) {
+        try await controller.continueMDDumperROMWriting(profile:.automatic,progress:{_ in})
+    }
+    wire.poweredOff = true
+    await #expect(throws:(any Error).self) {
+        try await controller.continueMDDumperROMWriting(profile:.automatic,progress:{_ in})
+    }
+    wire.poweredOff = false; wire.identificationMode = false
+    let writable = try await controller.continueMDDumperROMWriting(profile:.automatic,progress:{ value in
+        #expect(value.phase == .inspecting)
+    })
+    #expect(writable.canWrite && writable.flashCapacity?.bytes == 0x100000)
+    #expect(wire.commands.filter { $0[0] == 0x18 }.count == 1)
+    #expect(!wire.commands.contains { [UInt8(0x13),0x14,0x15,0x65].contains($0[0]) })
+    #expect(wire.rom == original && wire.save == save)
+    let image = try ROMImage(data:fixtureROM(save:false,title:"NEW GAME"))
+    let plan = try WritePlan(target:writable,image:image,romName:"game.bin",save:nil,saveName:nil,
+                             format:.packed,backupDestination:nil,clearUnusedROM:true)
+    let result = try await controller.write(plan,progress:{_ in})
+    #expect(result.manifest.outcome == "completed")
+    #expect(Data(wire.rom.prefix(image.data.count)) == image.data && wire.save == save)
+}
+
+@Test func mdDumperContinueRejectsChangedROMAndCancellationDiscardsPreparation() async throws {
+    let wire = DumperWire()
+    wire.rom = fixtureROM(save:false) + Data(repeating:0xFF,count:0x400000-65536)
+    wire.flashID = (0xBF,0xB7)
+    let controller = ProgrammerController(makeDevice:{ _,_ in try wire.device() })
+    try await controller.connect(path:"md-dumper:123")
+    let snapshot = try await controller.inspect(profile:.automatic)
+    try await controller.prepareMDDumperROMWriting(snapshot,progress:{_ in})
+    wire.rom[0x300000] ^= 1 // Header still matches; verify the full original range.
+    await #expect(throws:(any Error).self) {
+        try await controller.continueMDDumperROMWriting(profile:.automatic,progress:{_ in})
+    }
+    try await controller.cancelMDDumperROMWritingPreparation()
+    wire.rom[0x300000] ^= 1
+    await #expect(throws:(any Error).self) {
+        try await controller.continueMDDumperROMWriting(profile:.automatic,progress:{_ in})
+    }
+    #expect(wire.commands.filter { $0[0] == 0x18 }.count == 1)
+    #expect(!wire.commands.contains { [UInt8(0x13),0x14,0x15,0x65].contains($0[0]) })
+}
+
+@Test(arguments:[0xBFB7,0x98C2])
+func mdDumperPreparedROMCapacityDoesNotBlockSeparateSRAMQualification(chip: Int) async throws {
+    let wire = DumperWire()
+    wire.flashID = (UInt8(chip >> 8),UInt8(truncatingIfNeeded:chip))
+    wire.leaveIdentificationMode = true
+    let originalROM = wire.rom, originalSave = wire.save
+    let controller = ProgrammerController(makeDevice:{ _,_ in try wire.device() })
+    try await controller.connect(path:"md-dumper:123")
+    let snapshot = try await controller.inspect(profile:.automatic)
+    #expect(snapshot.saveStatus == .confirmed)
+    try await controller.prepareMDDumperROMWriting(snapshot,progress:{_ in})
+    wire.identificationMode = false
+    let writable = try await controller.continueMDDumperROMWriting(profile:.automatic,progress:{_ in})
+    #expect(writable.canWrite && writable.canBackupSave && writable.canStartSaveWrite)
+    #expect(writable.saveStatus == .confirmed && writable.saveLayout == snapshot.saveLayout)
+    #expect(writable.romReadLimit == (chip == 0xBFB7 ? 0x100000 : 0x200000))
+    // The wider SRAM probe must not grant ROM export access beyond the chip.
+    let invalid = try BackupRequest(cartridge:writable,romBytes:writable.romReadLimit,saveLayout:nil,
+                                    verify:true,destination:tempFolder())
+    #expect(invalid.romBytes == writable.romReadLimit)
+    #expect(throws:(any Error).self) {
+        try BackupRequest(cartridge:writable,romBytes:writable.romReadLimit+64,saveLayout:nil,
+                          verify:true,destination:tempFolder())
+    }
+    #expect(wire.rom == originalROM && wire.save == originalSave)
+    #expect(!wire.commands.contains { [UInt8(0x13),0x14,0x15,0x65].contains($0[0]) })
 }

@@ -26,6 +26,7 @@ public final class MDDumperDevice: CartridgeDevice, @unchecked Sendable {
     private var ssf2SaveLayout: SRAMLayout?
     private var ssf2SaveProbe: Int?
     private var linearSaveLayout: SRAMLayout?
+    private var saveProbeLayout: SRAMLayout?
     private var readLimit = 0x400000
     private var physicalReadLimit = 0x400000
     private var unavailable = false
@@ -190,6 +191,10 @@ public final class MDDumperDevice: CartridgeDevice, @unchecked Sendable {
     }
     public func qualifySRAM(layout: SRAMLayout) throws -> SaveMemoryStatus {
         guard bankedReader == nil, firmwareMajor == 2, firmwareMinor == 0, board == 3, layout.lane == 1 else { return .declared }
+        // SRAM occupies its own bus range, often beyond the identified ROM chip.
+        // Permit these read-only witnesses only while qualifying this layout.
+        saveProbeLayout = layout
+        defer { saveProbeLayout = nil }
         let status = try SaveMemoryProbe.qualify(self,layout:layout)
         linearSaveLayout = status == .confirmed ? layout : nil
         return status
@@ -390,20 +395,21 @@ public final class MDDumperDevice: CartridgeDevice, @unchecked Sendable {
             }
             return .init(identity:identity,chip:chip,bytes:limit,digest:digest,header:hash(header))
         } catch {
-            throw FlashMDError.invalid("\(error.localizedDescription) Leave the cartridge inserted, turn the reader off, unplug USB, then reconnect before scanning.")
+            throw FlashMDError.invalid("\(error.localizedDescription) Leave the cartridge inserted. Turn the MD Dumper off, wait three seconds, then turn it on before scanning.")
         }
     }
 
-    func acceptROMWritingPreparation(_ preparation: MDDumperWritePreparation, cartridge: CartridgeSnapshot) throws {
+    func acceptROMWritingPreparation(_ preparation: MDDumperWritePreparation, cartridge: CartridgeSnapshot,
+                                     progress: ProgressHandler = { _ in }) throws {
         guard identity == preparation.identity, cartridge.mapper == .linear, bankedReader == nil,
               cartridge.fingerprint == preparation.header,
               preparation.chip.capacity <= (cartridge.saveLayout?.base ?? 0x400000),
               preparation.chip.capacity <= (cartridge.metadata?.saveLayout?.base ?? 0x400000),
               preparation.chip.capacity <= (cartridge.flashCapacity?.bytes ?? 0x400000) else {
-            throw FlashMDError.invalid("The cartridge or configuration changed. Prepare ROM writing again.")
+            throw FlashMDError.invalid("The cartridge differs from the original read, or the reader has not restarted. Leave the original cartridge inserted, turn the MD Dumper off, wait three seconds, then turn it on and continue.")
         }
-        guard try preparationDigest(bytes:preparation.bytes,progress:{ _ in }) == preparation.digest else {
-            throw FlashMDError.invalid("ROM data changed or the chip is still in identification mode. Restart the reader with the same cartridge inserted, then prepare ROM writing again.")
+        guard try preparationDigest(bytes:preparation.bytes,progress:progress) == preparation.digest else {
+            throw FlashMDError.invalid("The cartridge ROM no longer matches the original read. Writing has not started. Check that the original cartridge is inserted and restart the MD Dumper before continuing.")
         }
         flash = preparation.chip; preparedHeader = preparation.header
     }
@@ -432,6 +438,11 @@ public final class MDDumperDevice: CartridgeDevice, @unchecked Sendable {
     public func readROMForVerification(offset: Int, count: Int) throws -> Data {
         verifyingROM = true
         defer { verifyingROM = false }
+        if let layout = saveProbeLayout, offset >= layout.base, count >= 0,
+           offset <= layout.base+layout.windowBytes, count <= layout.base+layout.windowBytes-offset {
+            try Task.checkCancellation()
+            return try readBus(offset:offset,count:count,cancellable:true)
+        }
         return try readROM(offset:offset,count:count)
     }
     public func readSRAM(layout: SRAMLayout, offset: Int, count: Int) throws -> Data {

@@ -35,6 +35,8 @@ struct SelectedFile: Sendable, Identifiable {
     }
 }
 
+enum ROMWritingPreparationStage { case preparing, restart, reconnecting }
+
 @MainActor @Observable final class WorkspaceModel {
     var direction = TransferDirection.backup
     var demoMode = false { didSet { guard oldValue != demoMode else { return }; invalidateReview(); Task { await updateConnectionMode() } } }
@@ -114,36 +116,92 @@ struct SelectedFile: Sendable, Identifiable {
         }
     }
     var mdDumperStreamingSupported = false
-    var canPrepareMDDumperROMWriting: Bool {
+    private(set) var romWritingPreparation: ROMWritingPreparationStage?
+    private(set) var romPreparationMessage: String?
+    private var canPrepareMDDumperROMWriting: Bool {
         !isBusy && connected && !configurationPending && !demoMode && mdDumperStreamingSupported &&
         cartridge?.readerKind == .mdDumper && cartridge?.mapper == .linear && cartridge?.canWrite != true
     }
-    func prepareMDDumperROMWriting() {
-        guard canPrepareMDDumperROMWriting, let cartridge else { return }
-        let alert = NSAlert()
-        alert.messageText = "Prepare this cartridge for ROM writing?"
-        alert.informativeText = "Use a writable flash cartridge. FlashMD will identify its chip without erasing or programming it. You must then restart the reader with the same cartridge inserted."
-        alert.addButton(withTitle:"Prepare"); alert.addButton(withTitle:"Cancel")
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
-        invalidateReview(); isInspecting = true; errorMessage = nil
-        scanStep = "Checking ROM before chip identification"
-        Task {
-            defer { isInspecting = false }
+    var canSelectROMForWriting: Bool { cartridge?.canWrite == true || canPrepareMDDumperROMWriting }
+    private func prepareMDDumperROMWriting(_ cartridge: CartridgeSnapshot) {
+        invalidateReview(); errorMessage = nil; romPreparationMessage = nil
+        romWritingPreparation = .preparing; operationRunning = true
+        operationTitle = "Prepare ROM writing"; operationCartridge = cartridge
+        operationStart = Date(); operationEnd = nil; operationResult = nil
+        progress = .init(.inspecting,detail:"Checking cartridge ROM")
+        let identifier = UUID(); progressID = identifier
+        operationTask = Task {
+            defer { operationRunning = false; operationTask = nil; progressID = nil }
             do {
                 let model = self
                 try await controller.prepareMDDumperROMWriting(cartridge) { [weak model] value in
                     Task { @MainActor [weak model] in
-                        guard model?.isInspecting == true, value.total > 0 else { return }
-                        model?.scanStep = "Preparing ROM writing · \(value.completed * 100 / value.total)%"
+                        if model?.progressID == identifier { model?.progress = value }
                     }
                 }
-                record(.init(title:"ROM writing prepared",detail:"Flash identified; restart required. No ROM erased or programmed."))
-                let prompt = NSAlert()
-                prompt.messageText = "Restart the reader"
-                prompt.informativeText = "Leave this cartridge inserted. Turn the MD Dumper off, unplug USB, then reconnect and scan. FlashMD will check the ROM before enabling writing. Keep FlashMD open until then."
-                prompt.addButton(withTitle:"OK"); prompt.runModal()
-            } catch { errorMessage = error.localizedDescription }
-            connected = false; self.cartridge = nil; contentAnalysis = nil
+                try Task.checkCancellation()
+                romWritingPreparation = .restart
+                record(.init(title:"ROM writing prepared",detail:"Flash identified; reader restart required. No ROM or SRAM written."))
+            } catch {
+                try? await controller.cancelMDDumperROMWritingPreparation()
+                romWritingPreparation = nil
+                progress = .init(error is CancellationError ? .cancelled : .failed,
+                    detail:error is CancellationError ? "Preparation cancelled. No ROM or SRAM written. Restart the MD Dumper before scanning." : error.localizedDescription)
+                operationEnd = Date(); self.cartridge = nil
+                record(.init(title:"ROM writing preparation",detail:error.localizedDescription,outcome:"failed"))
+            }
+            connected = false
+        }
+    }
+    func continueROMWritingPreparation() {
+        guard romWritingPreparation == .restart, !operationRunning else { return }
+        romWritingPreparation = .reconnecting; romPreparationMessage = nil; operationRunning = true
+        progress = .init(.inspecting,detail:"Connecting to MD Dumper")
+        let identifier = UUID(); progressID = identifier
+        operationTask = Task {
+            defer { operationRunning = false; operationTask = nil; progressID = nil }
+            do {
+                let model = self
+                let snapshot = try await controller.continueMDDumperROMWriting(profile:profile,override:configurationOverride,
+                    mapper:mapper,mdDumperStreaming:mdDumperStreaming) { [weak model] value in
+                    Task { @MainActor [weak model] in
+                        if model?.progressID == identifier { model?.progress = value }
+                    }
+                }
+                try Task.checkCancellation()
+                guard snapshot.canWrite else { throw FlashMDError.invalid("ROM writing is unavailable with this cartridge configuration. Cancel and scan again.") }
+                cartridge = snapshot; connected = true; connectedProgrammer = .mdDumper
+                contentAnalysis = nil; configurationPending = false
+                romWritingPreparation = nil; operationRunning = false; progressID = nil
+                clearOperationPresentation()
+                record(.init(title:"Cartridge ready for ROM writing",detail:"Original ROM verified after restart; flash capacity confirmed."))
+                prepareWrite()
+            } catch {
+                connected = false
+                if error is CancellationError {
+                    try? await controller.cancelMDDumperROMWritingPreparation()
+                    romWritingPreparation = nil; cartridge = nil; operationEnd = Date()
+                    progress = .init(.cancelled,detail:"ROM writing cancelled. No ROM or SRAM written. Restart the MD Dumper before scanning.")
+                    record(.init(title:"ROM writing cancelled",detail:"Cartridge check cancelled; no ROM or SRAM written.",outcome:"cancelled"))
+                } else {
+                    romWritingPreparation = .restart
+                    romPreparationMessage = error.localizedDescription
+                    record(.init(title:"ROM writing paused",detail:error.localizedDescription,outcome:"paused"))
+                }
+            }
+        }
+    }
+    func cancelROMWritingPreparation() {
+        guard romWritingPreparation == .restart, !operationRunning else { return }
+        operationRunning = true
+        operationTask = Task {
+            defer { operationRunning = false; operationTask = nil }
+            do { try await controller.cancelMDDumperROMWritingPreparation() }
+            catch { errorMessage = error.localizedDescription }
+            romWritingPreparation = nil; romPreparationMessage = nil; connected = false; cartridge = nil
+            progress = .init(.cancelled,detail:"ROM writing cancelled. No ROM or SRAM written. Restart the MD Dumper before scanning.")
+            operationEnd = Date()
+            record(.init(title:"ROM writing cancelled",detail:"Preparation discarded; no ROM or SRAM written.",outcome:"cancelled"))
         }
     }
     var pendingSaveRecovery = SaveRecoveryJournal.pendingFolders()
@@ -226,11 +284,11 @@ struct SelectedFile: Sendable, Identifiable {
     var operationStart: Date?
     var operationRunning = false
     var loadingFile = false
-    var isBusy: Bool { isInspecting || operationRunning || loadingFile }
+    var isBusy: Bool { isInspecting || operationRunning || loadingFile || romWritingPreparation != nil }
     var canBackup: Bool { !isBusy && !configurationPending && !demoMode && connected && cartridge != nil && (backupROM || backupSRAM) && (!backupROM || cartridge?.canBackupROM == true) && (!backupSRAM || cartridge?.canBackupSave == true) }
     var canReviewWrite: Bool {
         guard !isBusy, !configurationPending, !demoMode, connected, let cartridge, writeROM || writeSRAM else { return false }
-        return (!writeROM || (cartridge.canWrite && selectedROM != nil)) && (!writeSRAM || (cartridge.canStartSaveWrite && selectedSRAM != nil))
+        return (!writeROM || (canSelectROMForWriting && selectedROM != nil)) && (!writeSRAM || (cartridge.canStartSaveWrite && selectedSRAM != nil))
     }
     var backupSizeDescription: String {
         if let cartridge, !cartridge.canBackupROM { return "ROM backup unavailable" }
@@ -244,15 +302,16 @@ struct SelectedFile: Sendable, Identifiable {
         }
     }
     var connectionLabel: String { demoMode ? "Demo mode" : (connected ? "\(connectedProgrammer?.displayName ?? "Programmer") connected" : "No programmer connected") }
-    private let controller = ProgrammerController()
+    private let controller: ProgrammerController
     private let history: HistoryStore
     private var operationTask: Task<Void,Never>?
     private var sleepAssertion: IOPMAssertionID = 0
     private var initialized = false
     private var progressID: UUID?
-    init() {
+    init(controller: ProgrammerController = ProgrammerController(), historyURL: URL? = nil) {
+        self.controller = controller
         let folder = FileManager.default.urls(for:.applicationSupportDirectory,in:.userDomainMask)[0].appendingPathComponent("FlashMD",isDirectory:true)
-        history = HistoryStore(url:folder.appendingPathComponent("history.json"))
+        history = HistoryStore(url:historyURL ?? folder.appendingPathComponent("history.json"))
         activity = history.load()
         verifyBackup = UserDefaults.standard.object(forKey:"verifyBackup") as? Bool ?? true
         mdDumperStreaming = UserDefaults.standard.bool(forKey:"mdDumperStreaming")
@@ -305,7 +364,7 @@ struct SelectedFile: Sendable, Identifiable {
                 loadTitleOverride(from:analysis)
                 configurationPending = false
                 backupSRAM = snapshot.canBackupSave
-                if !snapshot.canWrite { writeROM = false }
+                if !canSelectROMForWriting { writeROM = false }
                 if !snapshot.canStartSaveWrite { writeSRAM = false }
                 record(.init(title:"Cartridge inspected",detail:snapshot.title))
                 return
@@ -393,6 +452,15 @@ struct SelectedFile: Sendable, Identifiable {
             if writeSRAM, selectedSRAM == nil { throw FlashMDError.invalid("Choose a separate save file to restore.") }
             let image = writeROM ? selectedROM?.image : nil
             let save = writeSRAM ? selectedSRAM?.data : nil
+            if let image, canPrepareMDDumperROMWriting {
+                guard ROMMapper.detect(image.metadata) == .linear else { throw FlashMDError.invalid("This game needs bank switching. Writing it to a linear cartridge is not supported.") }
+                let readRange = min(cartridge.flashCapacity?.bytes ?? 0x400000,cartridge.saveLayout?.base ?? 0x400000,cartridge.metadata?.saveLayout?.base ?? 0x400000)
+                guard image.data.count <= readRange else { throw FlashMDError.invalid("The ROM file exceeds the cartridge's accessible range.") }
+                guard (image.metadata.declaredROMBytes ?? 0) <= image.data.count else { throw FlashMDError.invalid("The ROM file is shorter than its header declares. Check that the backup is complete.") }
+                guard image.metadata.saveWarning == nil, cartridge.metadata?.saveWarning == nil else { throw FlashMDError.invalid("This game or cartridge uses an unsupported save type.") }
+                prepareMDDumperROMWriting(cartridge)
+                return
+            }
             func plan(_ format: SaveFormat, save: Data?) throws -> WritePlan {
                 try WritePlan(target:cartridge,image:image,romName:writeROM ? selectedROM?.name : nil,
                     save:save,saveName:writeSRAM ? selectedSRAM?.name : nil,format:format,backupDestination:nil,clearUnusedROM:clearUnusedROM)

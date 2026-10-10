@@ -58,14 +58,14 @@ ROM writing requires a **compatible writable flash cartridge**; the ROM chips in
 1. Scan the target cartridge and select **Write**.
 2. Select **Game ROM**, **SRAM data**, or both, then choose the files to write.
 3. Check the cartridge capacity and selected files.
-4. Click **Write…**, review the changes, then confirm with **Write ROM**, **Write Saves** or **Write Both**.
+4. Click **Write…**. If MD Dumper needs preparation, follow the restart step below. Review the changes, then confirm with **Write ROM**, **Write Saves** or **Write Both**.
 5. Wait for writing and verification to finish before disconnecting anything.
 
 **Writing replaces the selected cartridge contents.** Make a backup first if you want to keep them. When writing ROM only, FlashMD captures and checks existing SRAM so it can preserve the saves on supported cartridges. If a transfer is interrupted, save recovery files may remain; follow the instructions shown in the app.
 
 **Clear unused ROM space** is on by default. It clears old game data beyond the end of the new ROM within the write range. Your source file on the Mac stays unchanged. MD Dumper erases the whole ROM chip before writing, so it always clears the unused space.
 
-For MD Dumper, first click **Prepare ROM Writing…** in Advanced Settings and follow the instructions. This identifies the flash chip, then asks you to restart the reader with the same cartridge inserted. Scan again to let FlashMD check the cartridge and enable writing.
+For MD Dumper, FlashMD prepares ROM writing automatically in the main panel. When asked, leave the cartridge inserted, turn the reader off, wait three seconds, then turn it back on. USB can stay connected. Click **Continue**; FlashMD checks the original ROM and confirms the flash capacity before showing the write confirmation. If the reader is not ready yet, you can try Continue again. Preparation does not write ROM or SRAM.
 
 **Writing ROM or SRAM on banked cartridges is currently unsupported on both programmers.**
 
@@ -129,7 +129,7 @@ Most transfers start with a scan. Open **Advanced Settings** when you need to se
 ## Troubleshooting
 
 - **No programmer found:** check USB and the power switch. Close other dumper applications and scan again.
-- **Unreadable header:** follow the restart instructions with the cartridge still inserted. Use **Prepare ROM Writing…** only when preparing a writable flash cartridge.
+- **Unreadable header:** restart the reader as instructed with the cartridge still inserted, then scan again.
 - **Verification failed:** check Activity, restart the reader as instructed and scan again. Treat the backup or write as incomplete until verification succeeds.
 - **Wrong title:** click the pencil beside the title. This changes the display name and backup filenames, not the cartridge itself.
 

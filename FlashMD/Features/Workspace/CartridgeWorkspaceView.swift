@@ -34,7 +34,8 @@ struct CartridgeWorkspaceView: View {
                         if let cartridge = model.cartridge ?? model.operationCartridge, !model.isInspecting {
                             cartridgeSummary(cartridge,compact:viewport.size.height < 720)
                             Group {
-                                if model.progress != nil { progressPanel }
+                                if model.romWritingPreparation != nil { romPreparationPanel }
+                                else if model.progress != nil { progressPanel }
                                 else { transferPanel }
                             }.id("transferPanel")
                         } else { scanWelcome }
@@ -271,7 +272,7 @@ struct CartridgeWorkspaceView: View {
         VStack(alignment:.leading,spacing:14) {
             Text(model.writeROM && !model.writeSRAM && model.cartridge?.saveLayout != nil ? "Write a game. Keep your existing saves." : "Choose what to write to your cartridge.").font(.callout).foregroundStyle(.secondary)
             HStack(spacing:12) {
-                writeFileCard("Game ROM",file:model.selectedROM,selected:$model.writeROM,enabled:model.cartridge?.canWrite == true,forROM:true)
+                writeFileCard("Game ROM",file:model.selectedROM,selected:$model.writeROM,enabled:model.canSelectROMForWriting,forROM:true)
                 writeFileCard(model.savePanelTitle,file:model.selectedSRAM,selected:$model.writeSRAM,enabled:model.cartridge?.canStartSaveWrite == true,forROM:false)
             }
             if model.writeROM, let image = model.selectedROM?.image {
@@ -290,15 +291,8 @@ struct CartridgeWorkspaceView: View {
                 Button("Write…") { model.prepareWrite() }.buttonStyle(FlashActionStyle()).disabled(!model.canReviewWrite)
             }
             if model.cartridge?.canWrite != true {
-                if model.canPrepareMDDumperROMWriting {
-                    HStack {
-                        Text("Identify the flash chip to enable ROM writing.").font(.caption).foregroundStyle(.secondary)
-                        Spacer()
-                        Button("Prepare ROM Writing…") { model.prepareMDDumperROMWriting() }
-                    }
-                } else {
-                    Text("ROM writing is not supported for this cartridge. Backup is available.").font(.caption).foregroundStyle(.secondary)
-                }
+                Text(model.canSelectROMForWriting ? "FlashMD will check the flash chip before writing. A reader restart is required." : "ROM writing is not supported for this cartridge. Backup is available.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
         }.disabled(model.isBusy)
     }
@@ -508,6 +502,56 @@ struct CartridgeWorkspaceView: View {
         }.font(.callout).padding(26).background(panelBackground).disabled(model.isBusy)
     }
 
+    private var romPreparationPanel: some View {
+        VStack(alignment:.leading,spacing:20) {
+            let waiting = model.romWritingPreparation == .restart
+            HStack(spacing:12) {
+                if waiting {
+                    Image(systemName:"power").font(.system(size:26,weight:.light)).foregroundStyle(flashViolet)
+                } else { ProgressView().controlSize(.small).tint(flashViolet) }
+                VStack(alignment:.leading,spacing:5) {
+                    Text(waiting ? "Restart your MD Dumper" : model.romWritingPreparation == .preparing ? "Preparing ROM writing" : "Checking the cartridge")
+                        .font(.system(size:21,weight:.medium,design:.rounded))
+                    Text(waiting ? "Leave the cartridge inserted." : "Writing has not started.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            if waiting {
+                Text("Turn the MD Dumper off, wait three seconds, then turn it back on. Keep USB connected and click Continue when ready.")
+                    .font(.callout).fixedSize(horizontal:false,vertical:true)
+                if let message = model.romPreparationMessage {
+                    Text(message).font(.callout).foregroundStyle(.orange).fixedSize(horizontal:false,vertical:true)
+                }
+                Text("FlashMD will verify the cartridge before asking you to confirm the write.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Spacer(minLength:0)
+                HStack {
+                    Button("Cancel") { model.cancelROMWritingPreparation() }.disabled(model.operationRunning)
+                    Spacer()
+                    Button("Continue") { model.continueROMWritingPreparation() }
+                        .buttonStyle(FlashActionStyle()).disabled(model.operationRunning)
+                        .accessibilityIdentifier("continueROMWriting")
+                }
+            } else {
+                if let progress = model.progress {
+                    Text(progress.detail).font(.callout)
+                    if progress.total > 0 {
+                        ProgressView(value:Double(progress.completed),total:Double(progress.total))
+                        Text("\(formatBytes(progress.completed)) / \(formatBytes(progress.total))")
+                            .font(.caption).foregroundStyle(.secondary).monospacedDigit()
+                    } else { ProgressView().progressViewStyle(.linear) }
+                }
+                Spacer(minLength:0)
+                HStack {
+                    Text("Keep the cartridge inserted and the reader on.").font(.caption).foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Cancel") { model.cancel() }.disabled(model.progress?.cancellable == false)
+                }
+            }
+        }.padding(26).frame(maxWidth:.infinity,minHeight:300,alignment:.topLeading)
+            .background(panelBackground)
+    }
+
     private var progressPanel: some View {
         VStack(alignment:.leading,spacing:18) {
             if let progress = model.progress {
@@ -589,13 +633,13 @@ struct CartridgeWorkspaceView: View {
     private var footer: some View {
         HStack(spacing:18) {
             Circle().fill(model.connected || model.demoMode ? flashMint : Color.secondary.opacity(0.5)).frame(width:6,height:6)
-            Text(model.demoMode ? "Demo mode" : (model.connected ? model.connectionLabel : (model.ports.isEmpty ? "Connect your programmer via USB" : "USB device available · ready to scan")))
+            Text(model.romWritingPreparation == .restart ? "MD Dumper · waiting for restart" : model.demoMode ? "Demo mode" : (model.connected ? model.connectionLabel : (model.ports.isEmpty ? "Connect your programmer via USB" : "USB device available · ready to scan")))
                 .font(.caption).foregroundStyle(.secondary)
                 .help(model.connected ? model.selectedPort : "")
             Spacer()
             Button { pendingAdvancedScroll = !advanced; advanced.toggle() } label: {
                 HStack(spacing:5) { Text("Advanced Settings"); Image(systemName:advanced ? "chevron.up" : "chevron.down").font(.system(size:9,weight:.semibold)) }
-            }.accessibilityValue(advanced ? "Expanded" : "Collapsed")
+            }.accessibilityValue(advanced ? "Expanded" : "Collapsed").disabled(model.romWritingPreparation != nil)
             if !model.pendingSaveRecovery.isEmpty {
                 Button("Save Recovery") { model.showSaveRecovery() }.foregroundStyle(.orange)
                     .help("An interrupted write left preserved SRAM files. Keep them until the cartridge is recovered.")

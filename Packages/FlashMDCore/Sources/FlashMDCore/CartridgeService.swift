@@ -97,14 +97,18 @@ public actor ProgrammerController {
         guard !operationRunning else { throw FlashMDError.busy }
         device?.close(); device = nil; connectedPath = nil
     }
-    public func inspect(profile: CartridgeProfile, override: CartridgeConfiguration? = nil, mapper: ROMMapper = .automatic) throws -> CartridgeSnapshot {
+    public func inspect(profile: CartridgeProfile, override: CartridgeConfiguration? = nil, mapper: ROMMapper = .automatic,
+                        preparationProgress: @escaping ProgressHandler = { _ in }) throws -> CartridgeSnapshot {
         guard !operationRunning, let device else { throw FlashMDError.invalid("Connect a programmer before inspecting a cartridge.") }
         do {
             let snapshot = try device.inspectConfigured(profile:profile,override:override,mapper:mapper)
             if let preparation = pendingROMPreparation, let dumper = device as? MDDumperDevice {
+                // Keep the original evidence if Continue was clicked before a
+                // successful restart. A retry must check the same ROM again.
+                try dumper.acceptROMWritingPreparation(preparation.preparation,cartridge:snapshot,progress:preparationProgress)
+                let writable = try device.inspectConfigured(profile:profile,override:override,mapper:mapper)
                 pendingROMPreparation = nil
-                try dumper.acceptROMWritingPreparation(preparation.preparation,cartridge:snapshot)
-                return try device.inspectConfigured(profile:profile,override:override,mapper:mapper)
+                return writable
             }
             return snapshot
         }
@@ -125,6 +129,21 @@ public actor ProgrammerController {
             dumper.close(); device = nil; connectedPath = nil; operationRunning = false
         }
         pendingROMPreparation = (path,try dumper.prepareROMWriting(cartridge:cartridge,progress:progress))
+    }
+    public func continueMDDumperROMWriting(profile: CartridgeProfile, override: CartridgeConfiguration? = nil,
+                                         mapper: ROMMapper = .automatic, mdDumperStreaming: Bool = false,
+                                         progress: @escaping ProgressHandler) throws -> CartridgeSnapshot {
+        guard !operationRunning, let pending = pendingROMPreparation else {
+            throw FlashMDError.invalid("Start ROM writing again to check the flash chip.")
+        }
+        progress(.init(.inspecting,detail:"Connecting to MD Dumper"))
+        try connect(path:pending.path,mdDumperStreaming:mdDumperStreaming)
+        return try inspect(profile:profile,override:override,mapper:mapper,preparationProgress:progress)
+    }
+    public func cancelMDDumperROMWritingPreparation() throws {
+        guard !operationRunning else { throw FlashMDError.busy }
+        pendingROMPreparation = nil
+        try disconnect()
     }
     public func backup(_ request: BackupRequest, progress: @escaping ProgressHandler) throws -> OperationResult {
         try perform { device in try OperationRunner.backup(device:device,request:request,progress:progress) }
