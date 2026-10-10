@@ -13,6 +13,7 @@
 		C29BB9E307A2246E94B71BFD /* CartridgeWorkspaceView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 353FDD5560F82C12F011CBFE /* CartridgeWorkspaceView.swift */; };
 		E3A72B6C6399E025DD10DC65 /* ActivityView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 92D27EBB774A04FA76FE00B5 /* ActivityView.swift */; };
 		E474FB918E8B2A830630510D /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = CA1299C5FC136F31A2A0BB33 /* Assets.xcassets */; };
+		71FEA56030404F86B62E1910 /* AppIcon.icon in Resources */ = {isa = PBXBuildFile; fileRef = 4478A676BADE491D99B883A0 /* AppIcon.icon */; };
 		E5F85CD15697F4F1DF2F368C /* FlashMDCore in Frameworks */ = {isa = PBXBuildFile; productRef = 63A13EAA452F82BD2F391D13 /* FlashMDCore */; };
 		F6C19A87A1EE7F664FD6E9E3 /* WorkspaceView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7B516ED0B04F417AE3B225A /* WorkspaceView.swift */; };
 /* End PBXBuildFile section */
@@ -26,6 +27,7 @@
 		AFCE9792F77B1BDE7DA15722 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		BC042DFE1F5551BBF23B7778 /* FlashMDApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FlashMDApp.swift; sourceTree = "<group>"; };
 		CA1299C5FC136F31A2A0BB33 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		4478A676BADE491D99B883A0 /* AppIcon.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.icon; path = AppIcon.icon; sourceTree = "<group>"; };
 		E7B516ED0B04F417AE3B225A /* WorkspaceView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -124,6 +126,7 @@
 			isa = PBXGroup;
 			children = (
 				CA1299C5FC136F31A2A0BB33 /* Assets.xcassets */,
+				4478A676BADE491D99B883A0 /* AppIcon.icon */,
 			);
 			path = Resources;
 			sourceTree = "<group>";
@@ -193,6 +196,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				E474FB918E8B2A830630510D /* Assets.xcassets in Resources */,
+				71FEA56030404F86B62E1910 /* AppIcon.icon in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

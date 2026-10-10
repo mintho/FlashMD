@@ -139,7 +139,7 @@ To [report a problem](https://github.com/mintho/FlashMD/issues), include your ma
 
 ## Build from source
 
-You need **Xcode with Swift 6 support**. The repository includes the Xcode project and its local core package.
+You need **Xcode 26 or later** for the app icon and Swift 6 support. The repository includes the Xcode project and its local core package.
 
 ```sh
 git clone https://github.com/mintho/FlashMD.git
