@@ -2,6 +2,8 @@
 
 Back up your Sega Mega Drive / Genesis games and saves, or write a new game to a compatible flash cartridge. FlashMD is a native macOS app for **FlashKit** and **MD Dumper** USB programmers.
 
+[Visit the FlashMD website](https://www.digitalmints.com/flashmd/) for an overview, downloads and ways to support the project.
+
 Insert a cartridge, click **Scan Cartridge**, then choose **Backup** or **Write**. FlashMD reads the game information, suggests a ROM backup size and checks the available save memory.
 
 ![FlashMD start screen](Screenshots/start.png)
